@@ -1,0 +1,34 @@
+{
+  "name": "sola-worship-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:https": "vite --host 0.0.0.0",
+    "https:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "camera-server": "node camera-signaling-server.js",
+    "test:camera-protocol": "node scripts/camera-protocol-test.mjs"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "ws": "^8.13.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@rolldown/binding-win32-x64-msvc": "^1.2.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.7.0",
+    "vite": "^8.2.0"
+  }
+}

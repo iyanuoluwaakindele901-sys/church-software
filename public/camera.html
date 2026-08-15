@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Phone Camera</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #070707; color: #f7f7f7; }
+    .page { min-height: 100vh; display: flex; flex-direction: column; padding: 20px; box-sizing: border-box; gap: 16px; max-width: 640px; margin: 0 auto; }
+    header { display: flex; flex-direction: column; gap: 8px; }
+    header h1 { margin: 0; font-size: 24px; }
+    header p { margin: 0; font-size: 14px; color: #c7c7c7; }
+    .card { background: #121212; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 18px; display: grid; gap: 12px; }
+    label { display: grid; gap: 6px; font-size: 12px; color: #b4b4b4; }
+    input, select, textarea { width: 100%; padding: 12px 14px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.12); background: #090909; color: white; font: inherit; box-sizing: border-box; }
+    textarea { resize: vertical; min-height: 100px; }
+    button { padding: 12px 14px; border: none; border-radius: 6px; background: #d4a574; color: #111; font-weight: 700; cursor: pointer; font-size: 14px; }
+    button.secondary { background: #151515; color: white; border: 1px solid rgba(255,255,255,0.12); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .status { border-radius: 6px; background: rgba(255,255,255,0.05); padding: 12px; font-size: 13px; color: #d3d3d3; }
+    .status strong { color: white; }
+    .grid { display: grid; gap: 12px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .video-preview { width: 100%; min-height: 240px; border-radius: 8px; background: black; overflow: hidden; position: relative; }
+    video { width: 100%; height: 100%; object-fit: cover; background: black; }
+    .hint { font-size: 12px; color: #8f8f8f; }
+    .compact { display: flex; gap: 10px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Phone Camera</h1>
+      <p>Request camera permission, preview, and send video to the Sola Worship computer over the local network.</p>
+    </header>
+
+    <div class="card">
+      <div class="status" id="statusText">Initializing...</div>
+      <div class="status" id="secureContextText"></div>
+      <label>
+        Pairing code
+        <input id="pairCodeInput" placeholder="Enter pairing code" />
+      </label>
+      <label>
+        Signaling server URL
+        <input id="signalingInput" placeholder="ws://<computer-ip>:3001" />
+      </label>
+      <div class="compact">
+        <button id="connectBtn">Connect to Sola Worship</button>
+        <button id="startCameraBtn" class="secondary">Start Camera</button>
+        <button id="stopCameraBtn" class="secondary">Stop Camera</button>
+      </div>
+      <div class="grid">
+        <label>
+          Video source
+          <select id="facingSelect">
+            <option value="environment">Rear camera</option>
+            <option value="user">Front camera</option>
+            <option value="left">Left camera</option>
+            <option value="right">Right camera</option>
+          </select>
+        </label>
+        <label>
+          Resolution / FPS
+          <select id="resolutionSelect">
+            <option value="640x480@30">640x480 @ 30fps</option>
+            <option value="1280x720@30">1280x720 @ 30fps</option>
+            <option value="1920x1080@30">1920x1080 @ 30fps</option>
+            <option value="1280x720@60">1280x720 @ 60fps</option>
+            <option value="auto">Auto</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <strong>Local preview</strong>
+        <span class="hint">Your phone should ask for camera access.</span>
+      </div>
+      <div class="video-preview"><video id="localPreview" autoplay muted playsinline></video></div>
+    </div>
+
+    <div class="card">
+      <div class="status" id="connectionText">Not connected</div>
+      <label>
+        Phone label (optional)
+        <input id="phoneLabelInput" placeholder="e.g. Worship Camera 1" />
+      </label>
+      <div class="hint">After connecting, the controller can request the stream and show latency and status.</div>
+    </div>
+
+    <div class="card">
+      <label>
+        Mobile access link
+        <textarea id="mobileUrl" readonly></textarea>
+      </label>
+      <button id="copyLinkBtn" class="secondary">Copy link</button>
+    </div>
+  </div>
+
+  <script>
+    const statusText = document.getElementById('statusText');
+    const connectionText = document.getElementById('connectionText');
+    const pairCodeInput = document.getElementById('pairCodeInput');
+    const signalingInput = document.getElementById('signalingInput');
+    const phoneLabelInput = document.getElementById('phoneLabelInput');
+    const facingSelect = document.getElementById('facingSelect');
+    const resolutionSelect = document.getElementById('resolutionSelect');
+    const localPreview = document.getElementById('localPreview');
+    const connectBtn = document.getElementById('connectBtn');
+    const startCameraBtn = document.getElementById('startCameraBtn');
+    const stopCameraBtn = document.getElementById('stopCameraBtn');
+    const mobileUrl = document.getElementById('mobileUrl');
+    const copyLinkBtn = document.getElementById('copyLinkBtn');
+
+    let localStream = null;
+    let peerConnection = null;
+    let ws = null;
+    let deviceId = localStorage.getItem('sola-camera-device-id') || `phone-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem('sola-camera-device-id', deviceId);
+    let pairCode = '';
+    let serverUrl = '';
+    let isConnected = false;
+    let shouldReconnect = false;
+    let reconnectTimer = null;
+    let reconnectAttempt = 0;
+    const pendingIce = [];
+
+    const queryParams = new URLSearchParams(window.location.search);
+    if (queryParams.has('pairCode')) {
+      pairCode = queryParams.get('pairCode');
+      pairCodeInput.value = pairCode;
+    }
+    if (queryParams.has('server')) {
+      serverUrl = queryParams.get('server');
+      signalingInput.value = serverUrl;
+    }
+
+    const defaultSignal = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:3001`;
+    signalingInput.value = signalingInput.value || defaultSignal;
+
+    function setStatus(message) {
+      statusText.textContent = message;
+    }
+
+    function setConnection(message) {
+      connectionText.textContent = message;
+    }
+
+    function updateMobileUrl() {
+      const url = `${window.location.origin}/camera.html?pairCode=${encodeURIComponent(pairCodeInput.value.trim())}&server=${encodeURIComponent(signalingInput.value.trim())}`;
+      mobileUrl.value = url;
+    }
+
+    function sendMetadata() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const settings = localStream?.getVideoTracks()[0]?.getSettings?.() || {};
+      ws.send(JSON.stringify({
+        type: 'phone-metadata', deviceId,
+        label: phoneLabelInput.value.trim() || 'Phone Camera',
+        facingMode: settings.facingMode || facingSelect.value,
+        resolution: settings.width && settings.height ? `${settings.width}x${settings.height}` : resolutionSelect.value,
+        fps: settings.frameRate || (resolutionSelect.value.includes('@') ? Number(resolutionSelect.value.split('@')[1]) : 'auto'),
+      }));
+    }
+
+    function stopLocalCamera() {
+      if (!localStream) return;
+      localStream.getTracks().forEach((track) => track.stop());
+      localPreview.srcObject = null;
+      localStream = null;
+      setStatus('Camera stopped.');
+      sendMetadata();
+    }
+
+    async function startLocalCamera() {
+      stopLocalCamera();
+      const facingMode = facingSelect.value || 'environment';
+      const resolution = resolutionSelect.value;
+      const [width, height, fps] = (() => {
+        if (resolution === 'auto') return [undefined, undefined, undefined];
+        const [size, frameRate] = resolution.split('@');
+        const [w, h] = size.split('x').map(Number);
+        return [w, h, Number(frameRate) || undefined];
+      })();
+      const constraints = {
+        video: {
+          facingMode,
+          width: width || undefined,
+          height: height || undefined,
+          frameRate: fps || undefined,
+        },
+        audio: { echoCancellation: true, noiseSuppression: true },
+      };
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        localStream = stream;
+        localPreview.srcObject = stream;
+        setStatus('Camera ready.');
+        sendMetadata();
+        const sender = peerConnection?.getSenders().find((item) => item.track?.kind === 'video');
+        if (sender) await sender.replaceTrack(stream.getVideoTracks()[0]);
+      } catch (error) {
+        console.error(error);
+        setStatus('Camera permission denied or unsupported on this origin.');
+      }
+    }
+
+    function createSocket() {
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.close();
+        ws = null;
+      }
+      const url = signalingInput.value.trim() || defaultSignal;
+      ws = new WebSocket(url);
+      ws.onopen = () => {
+        reconnectAttempt = 0;
+        setStatus('Connected to signaling server. Registering...');
+        ws.send(JSON.stringify({ type: 'register', role: 'phone', pairCode: pairCodeInput.value.trim(), deviceId, label: phoneLabelInput.value.trim() || 'Phone Camera' }));
+      };
+      ws.onmessage = async (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          switch (message.type) {
+            case 'registered':
+              setStatus('Registered with controller. Waiting for connection request...');
+              updateMobileUrl();
+              sendMetadata();
+              ws.send(JSON.stringify({ type: 'phone-ready', deviceId }));
+              break;
+            case 'connect-request':
+              setStatus('Connection requested by controller. Creating WebRTC offer...');
+              await startLocalCamera();
+              await sendOffer();
+              break;
+            case 'answer':
+              await handleAnswer(message.sdp);
+              break;
+            case 'ice-candidate':
+              await handleRemoteIce(message.candidate);
+              break;
+            case 'disconnect':
+              setConnection('Disconnected by controller.');
+              closePeerConnection();
+              break;
+            case 'device-command':
+              await handleDeviceCommand(message);
+              break;
+            case 'device-ping':
+              ws.send(JSON.stringify({ type: 'device-pong', deviceId, time: message.time }));
+              break;
+            case 'pong':
+              setConnection(`Signaling round-trip ${Date.now() - message.time}ms`);
+              break;
+            case 'error':
+              setStatus(`Signaling error: ${message.message}`);
+              break;
+            default:
+              break;
+          }
+        } catch (err) {
+          console.warn('Invalid signaling message', err);
+        }
+      };
+      ws.onclose = () => {
+        setStatus(shouldReconnect ? 'Signaling connection closed. Reconnecting...' : 'Disconnected.');
+        setConnected(false);
+        if (shouldReconnect) {
+          window.clearTimeout(reconnectTimer);
+          reconnectAttempt += 1;
+          reconnectTimer = window.setTimeout(createSocket, Math.min(10000, 1000 * (2 ** Math.min(reconnectAttempt, 4))));
+        }
+      };
+      ws.onerror = () => {
+        setStatus('Signaling server error. Check URL and network.');
+      };
+    }
+
+    async function sendOffer() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setStatus('Signaling server not connected.');
+        return;
+      }
+      if (!localStream) {
+        await startLocalCamera();
+      }
+      closePeerConnection();
+      const pc = new RTCPeerConnection();
+      peerConnection = pc;
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          ws.send(JSON.stringify({ type: 'ice-candidate', target: pairCodeInput.value.trim(), source: deviceId, candidate: event.candidate }));
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        setConnection(`WebRTC ${pc.connectionState}`);
+        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'webrtc-state', deviceId, state: pc.connectionState }));
+        if (pc.connectionState === 'connected') {
+          setConnected(true);
+        }
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          window.setTimeout(() => {
+            if (shouldReconnect && ws?.readyState === WebSocket.OPEN && pc.connectionState !== 'connected') sendOffer();
+          }, 3000);
+        }
+      };
+      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({ type: 'offer', target: pairCodeInput.value.trim(), source: deviceId, sdp: offer.sdp, label: phoneLabelInput.value.trim() || 'Phone Camera', facingMode: facingSelect.value, resolution: resolutionSelect.value, fps: resolutionSelect.value.includes('@') ? Number(resolutionSelect.value.split('@')[1]) : undefined }));
+      setStatus('Offer sent. Waiting for answer...');
+    }
+
+    async function handleAnswer(sdp) {
+      if (!peerConnection) return;
+      await peerConnection.setRemoteDescription({ type: 'answer', sdp });
+      while (pendingIce.length) await peerConnection.addIceCandidate(pendingIce.shift());
+      setStatus('Connected to controller and streaming video.');
+      setConnected(true);
+    }
+
+    async function handleRemoteIce(candidate) {
+      if (!candidate) return;
+      if (!peerConnection?.remoteDescription) { pendingIce.push(candidate); return; }
+      try {
+        await peerConnection.addIceCandidate(candidate);
+      } catch (err) {
+        console.warn('ICE candidate error', err);
+      }
+    }
+
+    function closePeerConnection() {
+      if (peerConnection) {
+        peerConnection.onicecandidate = null;
+        peerConnection.onconnectionstatechange = null;
+        peerConnection.close();
+        peerConnection = null;
+      }
+      setConnected(false);
+    }
+
+    function setConnected(value) {
+      isConnected = value;
+      connectionText.textContent = value ? 'Connected and streaming.' : 'Not connected';
+    }
+
+    async function handleDeviceCommand(message) {
+      if (message.command === 'start') await startLocalCamera();
+      if (message.command === 'stop') stopLocalCamera();
+      if (message.command === 'rename' && message.label) phoneLabelInput.value = message.label;
+      if (message.command === 'settings') {
+        if (message.facingMode) facingSelect.value = message.facingMode;
+        if (message.resolution) resolutionSelect.value = message.resolution;
+        await startLocalCamera();
+      }
+      sendMetadata();
+    }
+
+    connectBtn.addEventListener('click', async () => {
+      pairCode = pairCodeInput.value.trim();
+      if (!pairCode) {
+        setStatus('Enter a pairing code first.');
+        return;
+      }
+      if (!signalingInput.value.trim()) {
+        setStatus('Enter the signaling server URL.');
+        return;
+      }
+      shouldReconnect = true;
+      if (!localStream) await startLocalCamera();
+      createSocket();
+    });
+
+    startCameraBtn.addEventListener('click', async () => {
+      await startLocalCamera();
+    });
+
+    stopCameraBtn.addEventListener('click', () => {
+      stopLocalCamera();
+    });
+
+    facingSelect.addEventListener('change', async () => { if (localStream) await startLocalCamera(); });
+    resolutionSelect.addEventListener('change', async () => { if (localStream) await startLocalCamera(); });
+    phoneLabelInput.addEventListener('change', sendMetadata);
+    pairCodeInput.addEventListener('input', updateMobileUrl);
+    signalingInput.addEventListener('input', updateMobileUrl);
+
+    copyLinkBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(mobileUrl.value);
+        setStatus('Link copied to clipboard.');
+      } catch {
+        setStatus('Copy failed. Use the link text manually.');
+      }
+    });
+
+    updateMobileUrl();
+    const secureContextText = document.getElementById('secureContextText');
+    secureContextText.textContent = window.isSecureContext
+      ? 'Secure camera context available.'
+      : 'Camera access is blocked by most mobile browsers on plain HTTP. Serve Sola Worship over HTTPS or use a trusted local development certificate.';
+    secureContextText.style.color = window.isSecureContext ? '#4ade80' : '#facc15';
+    setStatus('Ready. Enter your pairing code and connect.');
+    setConnection('Not connected');
+  </script>
+</body>
+</html>

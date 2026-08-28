@@ -34,6 +34,7 @@ export const KNOWN_VERSES = {
 };
 
 export const BIBLE_VERSION_FILES = {
+  yor: { id: 'yor', label: 'YOR', name: 'Open Yoruba Contemporary Bible', file: 'yor_vpl.txt', format: 'vpl' },
   kjv: { id: 'kjv', label: 'KJV', file: 'kjv.ewb' },
   niv: { id: 'niv', label: 'NIV', file: 'niv.ewb' },
   nlt: { id: 'nlt', label: 'NLT', file: 'nlt.ewb' },

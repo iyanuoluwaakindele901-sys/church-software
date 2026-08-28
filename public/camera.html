@@ -51,6 +51,10 @@
         <button id="startCameraBtn" class="secondary">Start Camera</button>
         <button id="stopCameraBtn" class="secondary">Stop Camera</button>
       </div>
+      <label class="compact" style="align-items:center;justify-content:flex-start">
+        <input id="microphoneInput" type="checkbox" style="width:auto" />
+        Include phone microphone audio
+      </label>
       <div class="grid">
         <label>
           Video source
@@ -66,8 +70,11 @@
           <select id="resolutionSelect">
             <option value="640x480@30">640x480 @ 30fps</option>
             <option value="1280x720@30">1280x720 @ 30fps</option>
-            <option value="1920x1080@30">1920x1080 @ 30fps</option>
+            <option value="1920x1080@30" selected>1920x1080 @ 30fps</option>
             <option value="1280x720@60">1280x720 @ 60fps</option>
+            <option value="1920x1080@60">1920x1080 @ 60fps</option>
+            <option value="2560x1440@30">2560x1440 @ 30fps</option>
+            <option value="3840x2160@30">3840x2160 @ 30fps</option>
             <option value="auto">Auto</option>
           </select>
         </label>
@@ -114,6 +121,7 @@
     const stopCameraBtn = document.getElementById('stopCameraBtn');
     const mobileUrl = document.getElementById('mobileUrl');
     const copyLinkBtn = document.getElementById('copyLinkBtn');
+    const microphoneInput = document.getElementById('microphoneInput');
 
     let localStream = null;
     let peerConnection = null;
@@ -185,26 +193,42 @@
         const [w, h] = size.split('x').map(Number);
         return [w, h, Number(frameRate) || undefined];
       })();
-      const constraints = {
+      const videoConstraints = {
         video: {
           facingMode,
           width: width || undefined,
           height: height || undefined,
           frameRate: fps || undefined,
+          aspectRatio: { ideal: 16 / 9 },
+          resizeMode: { ideal: 'none' },
         },
-        audio: { echoCancellation: true, noiseSuppression: true },
+        audio: false,
       };
       try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const videoStream = await navigator.mediaDevices.getUserMedia(videoConstraints);
+        const videoTrack = videoStream.getVideoTracks()[0];
+        if (videoTrack && 'contentHint' in videoTrack) videoTrack.contentHint = 'detail';
+        const tracks = [...videoStream.getVideoTracks()];
+        let microphoneUnavailable = false;
+        if (microphoneInput.checked) {
+          try {
+            const audioStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: { echoCancellation: true, noiseSuppression: true } });
+            tracks.push(...audioStream.getAudioTracks());
+          } catch (error) {
+            microphoneUnavailable = true;
+            console.warn('Phone microphone unavailable; continuing with video only.', error);
+          }
+        }
+        const stream = new MediaStream(tracks);
         localStream = stream;
         localPreview.srcObject = stream;
-        setStatus('Camera ready.');
+        setStatus(microphoneUnavailable ? 'Camera ready. Microphone unavailable, so video will continue without audio.' : `Camera ready${microphoneInput.checked ? ' with microphone audio' : ' (video only)'}.`);
         sendMetadata();
         const sender = peerConnection?.getSenders().find((item) => item.track?.kind === 'video');
         if (sender) await sender.replaceTrack(stream.getVideoTracks()[0]);
       } catch (error) {
         console.error(error);
-        setStatus('Camera permission denied or unsupported on this origin.');
+        setStatus('Camera permission denied or unsupported on this origin. Microphone permission is not required.');
       }
     }
 
@@ -310,7 +334,20 @@
           }, 3000);
         }
       };
-      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+      for (const track of localStream.getTracks()) {
+        const sender = pc.addTrack(track, localStream);
+        if (track.kind !== 'video' || !sender.getParameters || !sender.setParameters) continue;
+        try {
+          const parameters = sender.getParameters();
+          parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
+          parameters.encodings[0].maxBitrate = resolutionSelect.value.startsWith('3840x2160') ? 24000000 : resolutionSelect.value.startsWith('2560x1440') ? 14000000 : 8000000;
+          parameters.encodings[0].maxFramerate = resolutionSelect.value.includes('@') ? Number(resolutionSelect.value.split('@')[1]) : 30;
+          parameters.degradationPreference = 'maintain-resolution';
+          await sender.setParameters(parameters);
+        } catch (error) {
+          console.warn('The browser kept its default video encoding settings.', error);
+        }
+      }
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       ws.send(JSON.stringify({ type: 'offer', target: pairCodeInput.value.trim(), source: deviceId, sdp: offer.sdp, label: phoneLabelInput.value.trim() || 'Phone Camera', facingMode: facingSelect.value, resolution: resolutionSelect.value, fps: resolutionSelect.value.includes('@') ? Number(resolutionSelect.value.split('@')[1]) : undefined }));

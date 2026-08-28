@@ -13,6 +13,15 @@ dist-ssr
 *.local
 .cert/
 .tools/
+.sola-data/
+
+# Unused duplicate Bible archive exports kept locally only
+public/bibles/amp (1).ewb
+public/bibles/amp.ewb_0
+public/bibles/msg (1).ewb
+public/bibles/msg (2).ewb
+public/bibles/msg.ewb_0
+public/bibles/msg.ewb_1
 
 # Editor directories and files
 .vscode/*

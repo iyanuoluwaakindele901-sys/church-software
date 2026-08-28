@@ -3,6 +3,10 @@ import { BIBLE_BOOKS, BIBLE_VERSION_FILES, KNOWN_VERSES, SUPPORTED_BIBLE_LANGUAG
 const LOADED_BIBLE_VERSIONS = {};
 const BIBLE_LOAD_PROMISES = {};
 const CANONICAL_BOOKS = [...BIBLE_BOOKS.old, ...BIBLE_BOOKS.new];
+const VPL_BOOK_CODES = [
+  'GEN', 'EXO', 'LEV', 'NUM', 'DEU', 'JOS', 'JDG', 'RUT', '1SA', '2SA', '1KI', '2KI', '1CH', '2CH', 'EZR', 'NEH', 'EST', 'JOB', 'PSA', 'PRO', 'ECC', 'SOL', 'ISA', 'JER', 'LAM', 'EZE', 'DAN', 'HOS', 'JOE', 'AMO', 'OBA', 'JON', 'MIC', 'NAH', 'HAB', 'ZEP', 'HAG', 'ZEC', 'MAL',
+  'MAT', 'MAR', 'LUK', 'JOH', 'ACT', 'ROM', '1CO', '2CO', 'GAL', 'EPH', 'PHI', 'COL', '1TH', '2TH', '1TI', '2TI', 'TIT', 'PHM', 'HEB', 'JAM', '1PE', '2PE', '1JO', '2JO', '3JO', 'JUD', 'REV',
+];
 
 export function decodeAscii(bytes) {
   return new TextDecoder('ascii').decode(bytes).replace(/\0+.*$/, '');
@@ -80,6 +84,32 @@ export async function parseEwbBible(version, bytes) {
   return { loaded: true, verses, books };
 }
 
+export function parseVplBible(version, text) {
+  const booksByCode = new Map(VPL_BOOK_CODES.map((code, index) => [code, {
+    name: CANONICAL_BOOKS[index].name,
+    chapterCount: 0,
+    versesPerChapter: [],
+  }]));
+  const verses = {};
+  for (const line of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    const match = line.match(/^([1-3]?[A-Z]{2,3})\s+(\d+):(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const [, code, chapterText, verseText, content] = match;
+    const book = booksByCode.get(code);
+    if (!book) continue;
+    const chapter = Number(chapterText);
+    const verse = Number(verseText);
+    book.chapterCount = Math.max(book.chapterCount, chapter);
+    book.versesPerChapter[chapter - 1] = Math.max(book.versesPerChapter[chapter - 1] || 0, verse);
+    verses[`${book.name} ${chapter}:${verse}`] = content.trim();
+  }
+  const books = VPL_BOOK_CODES.map((code) => booksByCode.get(code));
+  if (books.some((book) => !book.chapterCount) || Object.keys(verses).length < 30000) {
+    throw new Error(`${version.toUpperCase()} local Bible data is incomplete.`);
+  }
+  return { loaded: true, verses, books };
+}
+
 export async function fetchBibleVersion(version) {
   if (LOADED_BIBLE_VERSIONS[version]) return LOADED_BIBLE_VERSIONS[version];
   if (BIBLE_LOAD_PROMISES[version]) return BIBLE_LOAD_PROMISES[version];
@@ -88,8 +118,9 @@ export async function fetchBibleVersion(version) {
   BIBLE_LOAD_PROMISES[version] = (async () => {
     const response = await fetch(`/bibles/${info.file}`);
     if (!response.ok) throw new Error(`Failed to load local Bible file ${info.file} (${response.status}).`);
-    const buffer = await response.arrayBuffer();
-    const loaded = await parseEwbBible(version, new Uint8Array(buffer));
+    const loaded = info.format === 'vpl'
+      ? parseVplBible(version, await response.text())
+      : await parseEwbBible(version, new Uint8Array(await response.arrayBuffer()));
     setLoadedBibleVersion(version, loaded);
     return loaded;
   })();

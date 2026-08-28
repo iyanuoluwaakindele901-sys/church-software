@@ -1,3 +1,5 @@
+param([switch]$InstallCA)
+
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -14,12 +16,17 @@ $certificateFile = Join-Path $certificateDirectory 'sola-worship.pem'
 $certificateKeyFile = Join-Path $certificateDirectory 'sola-worship-key.pem'
 New-Item -ItemType Directory -Force -Path $certificateDirectory | Out-Null
 
-& $mkcert -install
-if ($LASTEXITCODE -ne 0) { throw 'mkcert could not install its local certificate authority.' }
+if ($InstallCA) {
+  & $mkcert -install
+  if ($LASTEXITCODE -ne 0) { throw 'mkcert could not install its local certificate authority.' }
+}
 
-$addresses = Get-NetIPAddress -AddressFamily IPv4 |
-  Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' } |
-  Select-Object -ExpandProperty IPAddress -Unique
+$addresses = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+  Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up } |
+  ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+  Where-Object { $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $_.Address.IPAddressToString -ne '127.0.0.1' -and $_.Address.IPAddressToString -notlike '169.254.*' } |
+  ForEach-Object { $_.Address.IPAddressToString } |
+  Select-Object -Unique
 $names = @('localhost', '127.0.0.1', '::1') + $addresses
 
 & $mkcert -cert-file $certificateFile -key-file $certificateKeyFile @names

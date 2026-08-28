@@ -11,8 +11,8 @@ export function SongEditor({ onClose, onSave }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 350, display: 'grid', placeItems: 'center', padding: '16px', background: 'rgba(0,0,0,0.82)' }}>
-      <div style={{ width: 'min(920px, 100%)', maxHeight: '92vh', overflow: 'hidden', display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(260px, 0.75fr)', background: '#171717', border: '1px solid rgba(255,255,255,0.16)', borderRadius: '8px', color: 'white' }}>
-        <div style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0 }}>
+      <div style={{ width: 'min(920px, 100%)', height: 'min(720px, calc(100vh - 32px))', overflow: 'hidden', display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(260px, 0.75fr)', background: '#171717', border: '1px solid rgba(255,255,255,0.16)', borderRadius: '8px', color: 'white' }}>
+        <div style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div><div style={{ fontSize: '15px', fontWeight: '700' }}>Add New Song</div><div style={{ marginTop: '3px', color: 'rgba(255,255,255,0.5)', fontSize: '10px' }}>Create a reusable local song and generate slides from its lyrics.</div></div>
             <button onClick={onClose} title="Close" style={{ width: '32px', height: '32px', display: 'grid', placeItems: 'center', background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '4px', color: 'white', cursor: 'pointer' }}><X size={15} /></button>
@@ -26,11 +26,14 @@ export function SongEditor({ onClose, onSave }) {
             </label>
           </div>
           <label style={{ display: 'flex', flexDirection: 'column', gap: '5px', minHeight: 0, flex: 1, fontSize: '10px', color: 'rgba(255,255,255,0.6)' }}>Lyrics
-            <textarea value={lyrics} onChange={(event) => setLyrics(event.target.value)} placeholder={'Enter lyrics here.\n\nLeave a blank line between verses or sections.'} style={{ flex: 1, minHeight: '300px', resize: 'vertical', padding: '10px', background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.18)', borderRadius: '4px', color: 'white', lineHeight: 1.5 }} />
+            <textarea value={lyrics} onChange={(event) => setLyrics(event.target.value)} placeholder={'Enter lyrics here.\n\nLeave a blank line between verses or sections.'} style={{ flex: 1, minHeight: '180px', resize: 'vertical', padding: '10px', background: '#0d0d0d', border: '1px solid rgba(255,255,255,0.18)', borderRadius: '4px', color: 'white', lineHeight: 1.5 }} />
           </label>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '7px' }}>
+          <div style={{ position: 'sticky', bottom: 0, zIndex: 2, margin: '0 -18px -18px', padding: '12px 18px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', background: '#171717', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+            <span style={{ color: canSave ? '#4ade80' : 'rgba(255,255,255,0.45)', fontSize: '10px' }}>{!title.trim() ? 'Enter a song title to save' : !lyrics.trim() ? 'Enter the lyrics to save' : `${slides.length} slide${slides.length === 1 ? '' : 's'} ready`}</span>
+            <div style={{ display: 'flex', gap: '7px', flexShrink: 0 }}>
             <button onClick={onClose} style={{ padding: '8px 14px', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '4px', color: 'white', cursor: 'pointer' }}>Cancel</button>
             <button disabled={!canSave} onClick={() => onSave({ title: title.trim(), artist: artist.trim() || 'Unknown', lyrics, slides })} style={{ padding: '8px 14px', background: canSave ? '#d4a574' : 'rgba(255,255,255,0.08)', border: 0, borderRadius: '4px', color: canSave ? '#171717' : 'rgba(255,255,255,0.35)', fontWeight: '700', cursor: canSave ? 'pointer' : 'not-allowed' }}>Save Song</button>
+            </div>
           </div>
         </div>
         <div style={{ borderLeft: '1px solid rgba(255,255,255,0.1)', padding: '18px', overflowY: 'auto', background: '#111' }}>

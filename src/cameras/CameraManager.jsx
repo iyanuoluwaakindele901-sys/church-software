@@ -3,7 +3,6 @@ import { toDataURL } from 'qrcode';
 import { CameraView } from '../components/common/CameraView';
 import { X, Trash2 } from '../components/common/Icon';
 
-const SIGNALING_PORT = 3001;
 const RECONNECT_DELAY = 3000;
 
 const makeControllerId = () => {
@@ -24,12 +23,11 @@ const formatAge = (ms) => {
 	return `${Math.round(minutes / 60)}h ago`;
 };
 
-export function CameraManager({ open = true, onClose, onUseCamera }) {
+export function CameraManager({ open = true, onClose, onUseCamera, onDeviceStream }) {
 	const [wsStatus, setWsStatus] = useState('connecting');
 	const [pairCode, setPairCode] = useState(() => window.sessionStorage.getItem('sola-camera-pair-code') || '');
 	const [devices, setDevices] = useState([]);
 	const [selectedDeviceId, setSelectedDeviceId] = useState(null);
-	const [socketUrl] = useState(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:${SIGNALING_PORT}`);
 	const [serverNote, setServerNote] = useState('Use the QR link below to open the phone camera page or enter the pairing code.');
 	const [qrCodeUrl, setQrCodeUrl] = useState('');
 	const [trustQrCodeUrl, setTrustQrCodeUrl] = useState('');
@@ -46,13 +44,23 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 	const connectRef = useRef(null);
 	const mountedRef = useRef(true);
 	const desiredConnectionsRef = useRef(new Set());
+	const onDeviceStreamRef = useRef(onDeviceStream);
+	const pairCodeRef = useRef(pairCode);
 
+	useEffect(() => {
+		onDeviceStreamRef.current = onDeviceStream;
+	}, [onDeviceStream]);
+
+	useEffect(() => {
+		pairCodeRef.current = pairCode;
+	}, [pairCode]);
+
+	const socketUrl = useMemo(() => `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${lanHost}${window.location.port ? `:${window.location.port}` : ''}/__sola/camera-signal`, [lanHost]);
 	const phonePageUrl = useMemo(() => {
 		const port = window.location.port ? `:${window.location.port}` : '';
 		const origin = `${window.location.protocol}//${lanHost}${port}`;
-		const signal = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${lanHost}:${SIGNALING_PORT}`;
-		return `${origin}/camera.html?pairCode=${encodeURIComponent(pairCode)}&server=${encodeURIComponent(signal)}`;
-	}, [lanHost, pairCode]);
+		return `${origin}/camera.html?pairCode=${encodeURIComponent(pairCode)}&server=${encodeURIComponent(socketUrl)}`;
+	}, [lanHost, pairCode, socketUrl]);
 	const trustSetupUrl = useMemo(() => `http://${lanHost}:5174/`, [lanHost]);
 	const selectedDevice = devices.find((device) => device.deviceId === selectedDeviceId) || null;
 
@@ -114,6 +122,7 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 			pc.close();
 			peersRef.current.delete(deviceId);
 		}
+		onDeviceStreamRef.current?.(deviceId, null);
 		setSelectedDeviceId((current) => current === deviceId ? null : current);
 	}, []);
 
@@ -127,6 +136,7 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 			pc.close();
 			peersRef.current.delete(deviceId);
 		}
+		onDeviceStreamRef.current?.(deviceId, null);
 		updateDevice({ deviceId, status: 'disconnected', connectionState: 'closed', previewStream: null });
 	}, [updateDevice]);
 
@@ -138,8 +148,8 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 	}, []);
 
 	const registerController = useCallback(() => {
-		sendWs({ type: 'register', role: 'controller', controllerId: controllerIdRef.current, pairCode, label: 'Sola Worship Camera Server' });
-	}, [pairCode, sendWs]);
+		sendWs({ type: 'register', role: 'controller', controllerId: controllerIdRef.current, pairCode: pairCodeRef.current, label: 'Sola Worship Camera Server' });
+	}, [sendWs]);
 
 	const cleanupConnection = useCallback(() => {
 		if (pendingReconnect.current) {
@@ -157,7 +167,14 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 			}
 			wsRef.current = null;
 		}
-		peersRef.current.forEach((pc) => pc.close());
+		peersRef.current.forEach((pc, deviceId) => {
+			pc.onicecandidate = null;
+			pc.ontrack = null;
+			pc.onconnectionstatechange = null;
+			pc.oniceconnectionstatechange = null;
+			pc.close();
+			onDeviceStreamRef.current?.(deviceId, null);
+		});
 		peersRef.current.clear();
 	}, []);
 
@@ -180,6 +197,7 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 
 		pc.ontrack = (event) => {
 			const stream = event.streams[0] || new MediaStream([event.track]);
+			onDeviceStreamRef.current?.(deviceId, stream);
 			updateDevice({ deviceId, previewStream: stream, status: 'connected', connectionState: pc.connectionState });
 		};
 
@@ -263,7 +281,12 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 							window.sessionStorage.setItem('sola-camera-pair-code', message.pairCode);
 						}
 						if (Array.isArray(message.devices)) {
-							message.devices.forEach((device) => updateDevice({ ...device, status: 'available' }));
+							message.devices.forEach((device) => {
+								updateDevice({ ...device, status: 'available' });
+								if (desiredConnectionsRef.current.has(device.deviceId)) {
+									sendWs({ type: 'connect-phone', target: device.deviceId });
+								}
+							});
 						}
 						break;
 					case 'phone-connected':
@@ -281,6 +304,7 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 						});
 						break;
 					case 'phone-disconnected':
+						onDeviceStreamRef.current?.(message.deviceId, null);
 						updateDevice({ deviceId: message.deviceId, status: 'offline', connectionState: 'disconnected', previewStream: null, lastSeen: Date.now() });
 						break;
 					case 'phone-metadata':
@@ -422,8 +446,8 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 	const currentStatus = selectedDevice ? selectedDevice.status : 'No device selected';
 
 	return (
-		<div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 300, display: open ? 'flex' : 'none', justifyContent: 'center', alignItems: 'center', padding: '18px' }}>
-			<div style={{ width: '100%', maxWidth: '1160px', maxHeight: '96vh', overflowY: 'auto', background: '#121212', border: '1px solid rgba(255,255,255,0.14)', borderRadius: '16px', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', color: 'white', padding: '18px', display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: '16px' }}>
+		<div style={{ position: 'fixed', inset: 0, boxSizing: 'border-box', background: 'rgba(0,0,0,0.8)', zIndex: 300, display: open ? 'flex' : 'none', justifyContent: 'center', alignItems: 'center', padding: '18px', overflow: 'auto' }}>
+			<div style={{ width: '100%', maxWidth: '1160px', maxHeight: 'calc(100vh - 36px)', boxSizing: 'border-box', overflow: 'auto', background: '#121212', border: '1px solid rgba(255,255,255,0.14)', borderRadius: '16px', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', color: 'white', padding: '18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))', gap: '16px' }}>
 				<div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
 					<div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
 						<div>
@@ -437,7 +461,7 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 						<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
 							<div>
 								<div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.6)' }}>Signaling server</div>
-								<div style={{ fontSize: '13px', fontWeight: '600' }}>{socketUrl}</div>
+								<div style={{ fontSize: '13px', fontWeight: '600', overflowWrap: 'anywhere' }}>{socketUrl}</div>
 							</div>
 							<div style={{ display: 'flex', gap: '8px' }}>
 								<span style={{ fontSize: '12px', color: wsStatus === 'connected' ? '#4ade80' : wsStatus === 'connecting' ? '#facc15' : '#f87171' }}>{wsStatus.toUpperCase()}</span>
@@ -488,7 +512,7 @@ export function CameraManager({ open = true, onClose, onUseCamera }) {
 									</div>
 									<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
 										<select aria-label={`Facing mode for ${device.label}`} value={device.facingMode === 'user' ? 'user' : 'environment'} onChange={(event) => configureDevice(device.deviceId, { facingMode: event.target.value })} style={{ padding: '7px', background: '#111', border: '1px solid rgba(255,255,255,0.14)', borderRadius: '6px', color: 'white', fontSize: '10px' }}><option value="environment">Rear camera</option><option value="user">Front camera</option></select>
-										<select aria-label={`Resolution for ${device.label}`} value={String(device.resolution || 'auto').includes('@') ? device.resolution : 'auto'} onChange={(event) => configureDevice(device.deviceId, { resolution: event.target.value })} style={{ padding: '7px', background: '#111', border: '1px solid rgba(255,255,255,0.14)', borderRadius: '6px', color: 'white', fontSize: '10px' }}><option value="auto">Auto</option><option value="640x480@30">480p 30</option><option value="1280x720@30">720p 30</option><option value="1920x1080@30">1080p 30</option><option value="1280x720@60">720p 60</option></select>
+										<select aria-label={`Resolution for ${device.label}`} value={String(device.resolution || 'auto').includes('@') ? device.resolution : 'auto'} onChange={(event) => configureDevice(device.deviceId, { resolution: event.target.value })} style={{ padding: '7px', background: '#111', border: '1px solid rgba(255,255,255,0.14)', borderRadius: '6px', color: 'white', fontSize: '10px' }}><option value="auto">Auto</option><option value="640x480@30">480p 30</option><option value="1280x720@30">720p 30</option><option value="1920x1080@30">1080p 30</option><option value="1920x1080@60">1080p 60</option><option value="2560x1440@30">1440p 30</option><option value="3840x2160@30">4K 30</option></select>
 									</div>
 									<div style={{ display: 'grid', gap: '6px', fontSize: '10px', color: 'rgba(255,255,255,0.65)' }}>
 										<div><span style={{ color: '#fff' }}>State:</span> {device.connectionState || 'offline'}</div>

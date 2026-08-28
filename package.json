@@ -4,14 +4,19 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
     "dev": "vite",
-    "dev:https": "vite --host 0.0.0.0",
-    "https:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
+    "dev:https": "npm run dev -- --host 0.0.0.0",
+    "https:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1 -InstallCA",
     "build": "vite build",
     "lint": "eslint .",
+    "prepreview": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
     "preview": "vite preview",
     "camera-server": "node camera-signaling-server.js",
-    "test:camera-protocol": "node scripts/camera-protocol-test.mjs"
+    "test:camera-protocol": "node scripts/camera-protocol-test.mjs",
+    "test:song-library": "node scripts/song-library-test.mjs",
+    "desktop": "electron desktop/main.cjs",
+    "desktop:dev": "electron desktop/main.cjs --dev"
   },
   "dependencies": {
     "qrcode": "^1.5.1",
@@ -28,6 +33,7 @@
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
+    "electron": "^39.2.7",
     "globals": "^17.7.0",
     "vite": "^8.2.0"
   }

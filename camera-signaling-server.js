@@ -41,6 +41,8 @@ wss.on('listening', () => {
 const controllers = new Map();
 const controllerCodes = new Map();
 const phones = new Map();
+const presentationControllers = new Map();
+const presentationDisplays = new Map();
 
 const makePairCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
 const send = (ws, payload) => {
@@ -92,6 +94,25 @@ wss.on('connection', (ws) => {
 
     const { type } = message;
     if (type === 'register') {
+      if (message.role === 'presentation-controller') {
+        if (!message.pairCode) return;
+        ws.role = 'presentation-controller';
+        ws.pairCode = message.pairCode;
+        presentationControllers.set(message.pairCode, ws);
+        send(ws, { type: 'presentation-registered', pairCode: message.pairCode });
+        return;
+      }
+
+      if (message.role === 'presentation-display') {
+        if (!message.pairCode) return;
+        ws.role = 'presentation-display';
+        ws.pairCode = message.pairCode;
+        if (!presentationDisplays.has(message.pairCode)) presentationDisplays.set(message.pairCode, new Set());
+        presentationDisplays.get(message.pairCode).add(ws);
+        send(presentationControllers.get(message.pairCode), { type: 'presentation-display-ready' });
+        return;
+      }
+
       if (message.role === 'controller') {
         let pairCode = message.pairCode || controllerCodes.get(message.controllerId) || makePairCode();
         while (controllers.has(pairCode)) {
@@ -184,6 +205,11 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (type === 'presentation-state' && ws.role === 'presentation-controller') {
+      presentationDisplays.get(ws.pairCode)?.forEach((display) => send(display, { type: 'presentation-state', state: message.state }));
+      return;
+    }
+
     if (type === 'device-command' || type === 'device-ping') {
       const phone = phones.get(message.target);
       if (!phone || ws.role !== 'controller' || phone.pairCode !== ws.pairCode) {
@@ -261,6 +287,12 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    if (ws.role === 'presentation-controller' && presentationControllers.get(ws.pairCode) === ws) presentationControllers.delete(ws.pairCode);
+    if (ws.role === 'presentation-display') {
+      const displays = presentationDisplays.get(ws.pairCode);
+      displays?.delete(ws);
+      if (displays?.size === 0) presentationDisplays.delete(ws.pairCode);
+    }
     if (ws.role === 'controller') {
       cleanupController(ws.pairCode);
     }

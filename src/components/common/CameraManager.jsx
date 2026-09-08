@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toDataURL } from 'qrcode';
 import { CameraView } from './CameraView';
-import { X, Plus, Trash2, Camera as CameraIcon, Settings, CheckSquare, ArrowLeft } from './Icon';
+import { X, Trash2, Camera as CameraIcon } from './Icon';
 
 const SIGNALING_PORT = 3001;
 const RECONNECT_DELAY = 3000;
@@ -17,13 +17,14 @@ const formatAge = (ms) => {
   if (minutes < 60) return `${minutes}m ago`;
   return `${Math.round(minutes / 60)}h ago`;
 };
+const currentTimestamp = () => Date.now();
 
 export function CameraManager({ onClose }) {
   const [wsStatus, setWsStatus] = useState('connecting');
   const [pairCode, setPairCode] = useState('');
   const [devices, setDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState(null);
-  const [socketUrl, setSocketUrl] = useState(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:${SIGNALING_PORT}`);
+  const socketUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:${SIGNALING_PORT}`;
   const [serverNote, setServerNote] = useState('Use the QR link below to open the phone camera page or enter the pairing code.');
   const [qrCodeUrl, setQrCodeUrl] = useState('');
 
@@ -33,6 +34,8 @@ export function CameraManager({ onClose }) {
   const peersRef = useRef(new Map());
   const deviceMapRef = useRef(new Map());
   const pingRef = useRef({ lastSent: null, lastRcv: null });
+  const connectRef = useRef(null);
+  const selectedDeviceIdRef = useRef(null);
 
   const phonePageUrl = useMemo(() => `${window.location.origin}/camera.html?pairCode=${pairCode}`, [pairCode]);
   const selectedDevice = devices.find((device) => device.deviceId === selectedDeviceId) || null;
@@ -74,8 +77,8 @@ export function CameraManager({ onClose }) {
       pc.close();
       peersRef.current.delete(deviceId);
     }
-    if (selectedDeviceId === deviceId) setSelectedDeviceId(null);
-  }, [selectedDeviceId]);
+    setSelectedDeviceId((current) => (current === deviceId ? null : current));
+  }, []);
 
   const closePeer = useCallback((deviceId) => {
     const pc = peersRef.current.get(deviceId);
@@ -125,7 +128,7 @@ export function CameraManager({ onClose }) {
     if (pendingReconnect.current) return;
     pendingReconnect.current = window.setTimeout(() => {
       pendingReconnect.current = null;
-      connect();
+      connectRef.current?.();
     }, RECONNECT_DELAY);
   }, []);
 
@@ -249,7 +252,7 @@ export function CameraManager({ onClose }) {
             if (pingRef.current.lastSent) {
               const latency = Date.now() - pingRef.current.lastSent;
               pingRef.current.lastRcv = Date.now();
-              updateDevice({ deviceId: selectedDeviceId || '', latencyMs: latency });
+              updateDevice({ deviceId: selectedDeviceIdRef.current || '', latencyMs: latency });
             }
             break;
           case 'error':
@@ -274,10 +277,18 @@ export function CameraManager({ onClose }) {
       scheduleReconnect();
       setDevices((current) => current.map((device) => ({ ...device, status: 'offline' })));
     };
-  }, [cleanupConnection, handleIncomingIce, handleIncomingOffer, registerController, scheduleReconnect, sendWs, socketUrl, updateDevice]);
+  }, [cleanupConnection, handleIncomingIce, handleIncomingOffer, registerController, removeDevice, scheduleReconnect, socketUrl, updateDevice]);
 
   useEffect(() => {
-    connect();
+    connectRef.current = connect;
+  }, [connect]);
+
+  useEffect(() => {
+    selectedDeviceIdRef.current = selectedDeviceId;
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    queueMicrotask(connect);
     return cleanupConnection;
   }, [connect, cleanupConnection]);
 
@@ -307,10 +318,6 @@ export function CameraManager({ onClose }) {
     sendWs({ type: 'disconnect-phone', target: deviceId });
     closePeer(deviceId);
     updateDevice({ deviceId, status: 'offline', connectionState: 'closed' });
-  };
-
-  const handleRenameDevice = (deviceId, customLabel) => {
-    updateDevice({ deviceId, customLabel });
   };
 
   const copyLink = async () => {
@@ -392,7 +399,7 @@ export function CameraManager({ onClose }) {
                     <div><span style={{ color: '#fff' }}>Facing:</span> {device.facingMode || 'unknown'}</div>
                     <div><span style={{ color: '#fff' }}>Resolution:</span> {device.resolution || 'auto'} · {device.fps || 'auto'} FPS</div>
                     <div><span style={{ color: '#fff' }}>Latency:</span> {formatLatency(device.latencyMs)}</div>
-                    <div><span style={{ color: '#fff' }}>Last seen:</span> {formatAge(Date.now() - (device.lastSeen || Date.now()))}</div>
+                    <div><span style={{ color: '#fff' }}>Last seen:</span> {formatAge(currentTimestamp() - (device.lastSeen || currentTimestamp()))}</div>
                   </div>
                 </div>
               ))}

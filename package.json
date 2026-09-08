@@ -14,6 +14,7 @@
     "preview": "vite preview",
     "camera-server": "node camera-signaling-server.js",
     "test:camera-protocol": "node scripts/camera-protocol-test.mjs",
+    "test:bible-library": "node scripts/bible-library-test.mjs",
     "test:song-library": "node scripts/song-library-test.mjs",
     "desktop": "electron desktop/main.cjs",
     "desktop:dev": "electron desktop/main.cjs --dev"

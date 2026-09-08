@@ -21,7 +21,7 @@ import {
 import { SERVICE_MEDIA, mergeBuiltInMedia, mergeBuiltInThemes } from '../data/mediaLibrary';
 import {
   fetchBibleVersion, findLiveVerseMatch, parseRef, searchBibleVersion, searchVerseTopicsByKeyword, setLoadedBibleVersion,
-  getLoadedBibleVersion, translateVerse, verseCountFor, getVerseText, getVerseTextAsync,
+  translateVerse, verseCountFor, getVerseText, getVerseTextAsync,
 } from '../utils/bible';
 import {
   fetchRealLyricsAT, searchLocalSongs, searchOnlineSongsDetailed,
@@ -39,10 +39,10 @@ let nextServiceId = 1000;
 let nextSceneId = 10;
 let nextSourceId = 100;
 let nextThemeId = 500;
-let nextMediaId = 600;
 let nextPresId = 700;
 let nextSlideId = 800;
 const createSongId = () => `song-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+const currentTimestamp = () => Date.now();
 
 const normalizeSavedSongs = (songs = []) => {
   const seen = new Set();
@@ -174,6 +174,25 @@ function renderObsSource(source, hideText, cameraStreams = {}, screenStreams = {
   return null;
 }
 
+function LibraryVideoPreview({ item, style }) {
+  const videoRef = useRef(null);
+  const playPreview = () => videoRef.current?.play().catch(() => null);
+  const pausePreview = () => videoRef.current?.pause();
+  return (
+    <video
+      ref={videoRef}
+      src={item.dataUrl}
+      muted
+      loop={item.loop !== false}
+      playsInline
+      preload="metadata"
+      onMouseEnter={playPreview}
+      onMouseLeave={pausePreview}
+      style={style}
+    />
+  );
+}
+
 function fmtDuration(seconds) {
   const hours = String(Math.floor(seconds / 3600)).padStart(2, '0');
   const minutes = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
@@ -204,7 +223,6 @@ export default function SolaWorshipApp() {
     { id: 10, name: 'Closing Announcements', type: 'slide', duration: '2 min' },
   ]);
   const [expandedServiceItemId, setExpandedServiceItemId] = useState(null);
-  const [dragOverItemId, setDragOverItemId] = useState(null);
   const [pointerDragId, setPointerDragId] = useState(null);
   const serviceItemRefs = useRef({});
 
@@ -224,9 +242,8 @@ export default function SolaWorshipApp() {
   const [focusedVerse, setFocusedVerse] = useState(null);
   const [aiQuery, setAiQuery] = useState('');
   const [listening, setListening] = useState(false);
-  const [voiceSupported, setVoiceSupported] = useState(true);
+  const [voiceSupported, setVoiceSupported] = useState(() => Boolean(window.SpeechRecognition || window.webkitSpeechRecognition));
   const [voiceError, setVoiceError] = useState(null);
-  const [liveGuess, setLiveGuess] = useState(null);
   const recognitionRef = useRef(null);
   const [loadedBibleVersions, setLoadedBibleVersions] = useState({});
   const [bibleLoading, setBibleLoading] = useState(false);
@@ -240,6 +257,7 @@ export default function SolaWorshipApp() {
   const [activeSong, setActiveSong] = useState(null);
   const [activeSongSlides, setActiveSongSlides] = useState([]);
   const [songFontSize, setSongFontSize] = useState(56);
+  const [slideFontSize, setSlideFontSize] = useState(64);
   const [songSourceNote, setSongSourceNote] = useState('');
   const [savedSongs, setSavedSongs] = useState([]);
   const [songLibraryStatus, setSongLibraryStatus] = useState('loading');
@@ -281,6 +299,7 @@ export default function SolaWorshipApp() {
 
   const [storageReady, setStorageReady] = useState(false);
   const [storageStatus, setStorageStatus] = useState('loading');
+  const persistenceTimerRef = useRef(null);
 
   const [audioChannels, setAudioChannels] = useState([
     { id: 'desktop', name: 'Desktop/System Audio', icon: 'monitor', inputType: 'desktop', level: 62, gain: 0, muted: false, solo: false, meter: 62, bus: 'Master', available: 'where supported by capture/browser permissions', processing: ['EQ ready', 'Compressor ready', 'Gate ready'] },
@@ -364,11 +383,11 @@ export default function SolaWorshipApp() {
   const [splitCameraSide, setSplitCameraSide] = useState('left');
   const [splitCameraSourceId, setSplitCameraSourceId] = useState('');
 
-  useEffect(() => {
-    if (isProjectorMode) return;
-    const liveCameraId = Object.keys(cameraStreams).find((sourceId) => cameraStreams[sourceId]?.getVideoTracks?.().some((track) => track.readyState === 'live')) || '';
-    setSplitCameraSourceId((current) => current && cameraStreams[current] ? current : liveCameraId);
-  }, [cameraStreams, isProjectorMode]);
+  const activeSplitCameraSourceId = useMemo(() => {
+    if (isProjectorMode) return splitCameraSourceId;
+    if (splitCameraSourceId && cameraStreams[splitCameraSourceId]) return splitCameraSourceId;
+    return Object.keys(cameraStreams).find((sourceId) => cameraStreams[sourceId]?.getVideoTracks?.().some((track) => track.readyState === 'live')) || '';
+  }, [cameraStreams, isProjectorMode, splitCameraSourceId]);
 
   useEffect(() => {
     cameraStreamsRef.current = cameraStreams;
@@ -412,7 +431,7 @@ export default function SolaWorshipApp() {
       if (projectorFrameRelayRequestedRef.current && projectorChannelRef.current) {
         relays.forEach((relay) => {
           if (projectorNativeCameraStreamsRef.current.has(relay.sourceId)) return;
-          if (time - relay.lastSent < 100 || relay.video.readyState < 2) return;
+          if (time - relay.lastSent < 160 || relay.video.readyState < 2) return;
           if (relay.awaitingAck) return;
           const sourceWidth = relay.video.videoWidth || 960;
           const sourceHeight = relay.video.videoHeight || 540;
@@ -425,7 +444,7 @@ export default function SolaWorshipApp() {
           if (!context) return;
           try {
             context.drawImage(relay.video, 0, 0, width, height);
-            const frame = relay.canvas.toDataURL('image/jpeg', 0.62);
+            const frame = relay.canvas.toDataURL('image/jpeg', 0.55);
             relay.sequence += 1;
             relay.awaitingAck = true;
             projectorChannelRef.current?.postMessage({ type: 'camera-frame', sourceId: relay.sourceId, sequence: relay.sequence, frame });
@@ -480,10 +499,17 @@ export default function SolaWorshipApp() {
     if (stream) audioEngineRef.current.attachStream('camera-audio', stream);
   }, [audioEngineReady, cameraStreams]);
 
+  const hasRunningCountdown = useMemo(() => {
+    const sceneHasRunningCountdown = (scene) => scene?.sources?.some((source) => source.type === 'countdown' && source.timerRunning);
+    return obsScenes.some(sceneHasRunningCountdown)
+      || (programContent?.kind === 'obs-scene' && sceneHasRunningCountdown(programContent.scene));
+  }, [obsScenes, programContent]);
+
   useEffect(() => {
-    const timer = window.setInterval(() => setCountdownTick((value) => value + 1), 250);
+    if (!hasRunningCountdown) return undefined;
+    const timer = window.setInterval(() => setCountdownTick((value) => value + 1), 500);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [hasRunningCountdown]);
 
   const [multiviewOpen, setMultiviewOpen] = useState(false);
 
@@ -520,6 +546,7 @@ export default function SolaWorshipApp() {
           if (data.selectedVersion) setSelectedVersion(data.selectedVersion);
           if (data.bibleFontSize) setBibleFontSize(data.bibleFontSize);
           if (data.songFontSize) setSongFontSize(data.songFontSize);
+          if (data.slideFontSize) setSlideFontSize(data.slideFontSize);
           if (data.obsScenes) setObsScenes(normalizeObsScenes(data.obsScenes));
           if (data.themeItems) setThemeItems(mergeBuiltInThemes(ensureCommunionTheme(data.themeItems)));
           if (data.mediaItems) setMediaItems(mergeBuiltInMedia(data.mediaItems));
@@ -550,14 +577,16 @@ export default function SolaWorshipApp() {
 
   useEffect(() => {
     if (!storageReady || storageStatus !== 'ok') return;
-    (async () => {
+    window.clearTimeout(persistenceTimerRef.current);
+    persistenceTimerRef.current = window.setTimeout(async () => {
       try {
-        await window.storage.set('sola-worship:state-v8', JSON.stringify({ serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs }));
+        await window.storage.set('sola-worship:state-v8', JSON.stringify({ serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, slideFontSize, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs }));
       } catch {
         // ignore persistence errors
       }
-    })();
-  }, [serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs, storageReady, storageStatus]);
+    }, 500);
+    return () => window.clearTimeout(persistenceTimerRef.current);
+  }, [serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, slideFontSize, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs, storageReady, storageStatus]);
 
   useEffect(() => {
     const applyProjectorState = (state) => {
@@ -750,11 +779,13 @@ export default function SolaWorshipApp() {
 
   useEffect(() => {
     if (isProjectorMode) return;
-    const state = { programContent, stagedContent, isBlack, textCleared, activeBackground, selectedVersion, transitionType, transitionDuration, transitioning, outgoingSnapshot, transitionId: transitionSequenceRef.current, splitScreenMode, splitCameraSide, splitCameraSourceId };
+    const state = { programContent, stagedContent, isBlack, textCleared, activeBackground, selectedVersion, transitionType, transitionDuration, transitioning, outgoingSnapshot, transitionId: transitionSequenceRef.current, splitScreenMode, splitCameraSide, splitCameraSourceId: activeSplitCameraSourceId };
     projectorStateRef.current = state;
     projectorChannelRef.current?.postMessage({ type: 'program-state', state });
-    try { window.localStorage.setItem('sola-worship:projector', JSON.stringify(state)); } catch { /* storage is optional */ }
-  }, [isProjectorMode, programContent, stagedContent, isBlack, textCleared, activeBackground, selectedVersion, transitionType, transitionDuration, transitioning, outgoingSnapshot, splitScreenMode, splitCameraSide, splitCameraSourceId]);
+    if (!window.solaDesktop?.isDesktop) {
+      try { window.localStorage.setItem('sola-worship:projector', JSON.stringify(state)); } catch { /* storage is optional */ }
+    }
+  }, [isProjectorMode, programContent, stagedContent, isBlack, textCleared, activeBackground, selectedVersion, transitionType, transitionDuration, transitioning, outgoingSnapshot, splitScreenMode, splitCameraSide, activeSplitCameraSourceId]);
 
   useEffect(() => {
     if (remoteDisplayPairCode) return undefined;
@@ -827,14 +858,14 @@ export default function SolaWorshipApp() {
   useEffect(() => {
     if (isProjectorMode || !projectorStateRef.current || remotePresentationSocketRef.current?.readyState !== WebSocket.OPEN) return;
     remotePresentationSocketRef.current.send(JSON.stringify({ type: 'presentation-state', state: projectorStateRef.current }));
-  }, [isProjectorMode, programContent, stagedContent, isBlack, textCleared, activeBackground, selectedVersion, transitionType, transitionDuration, transitioning, outgoingSnapshot, splitScreenMode, splitCameraSide, splitCameraSourceId]);
+  }, [isProjectorMode, programContent, stagedContent, isBlack, textCleared, activeBackground, selectedVersion, transitionType, transitionDuration, transitioning, outgoingSnapshot, splitScreenMode, splitCameraSide, activeSplitCameraSourceId]);
 
   useEffect(() => {
     if (!isProjectorMode) return undefined;
     const cameraSources = programContent?.kind === 'obs-scene'
       ? (programContent.scene?.sources || []).filter((source) => source.visible && (source.type === 'camera' || source.type === 'phone-camera'))
       : [];
-    if (splitScreenMode && splitCameraSourceId && !cameraSources.some((source) => source.id === splitCameraSourceId)) cameraSources.push({ id: splitCameraSourceId, type: 'camera', visible: true });
+    if (splitScreenMode && activeSplitCameraSourceId && !cameraSources.some((source) => source.id === activeSplitCameraSourceId)) cameraSources.push({ id: activeSplitCameraSourceId, type: 'camera', visible: true });
     const wantedIds = new Set(cameraSources.map((source) => source.id));
 
     projectorCameraStreamsRef.current.forEach((entry, sourceId) => {
@@ -886,7 +917,7 @@ export default function SolaWorshipApp() {
       if (shouldRetry) setProjectorStreamRevision((value) => value + 1);
     }, 5000);
     return () => window.clearTimeout(retryTimer);
-  }, [isProjectorMode, programContent, projectorStreamRevision, splitScreenMode, splitCameraSourceId]);
+  }, [isProjectorMode, programContent, projectorStreamRevision, splitScreenMode, activeSplitCameraSourceId]);
 
   useEffect(() => () => {
     projectorPeerConnectionsRef.current.forEach((peer) => peer.close());
@@ -921,12 +952,6 @@ export default function SolaWorshipApp() {
     window.addEventListener('click', handler);
     return () => window.removeEventListener('click', handler);
   }, []);
-
-  useEffect(() => {
-    setSelectedVerses([]);
-    setVerseAnchor(null);
-    setFocusedVerse(null);
-  }, [selectedBook, selectedChapter]);
 
   const selectedBibleData = loadedBibleVersions[selectedVersion] || null;
   const bibleSearchResults = useMemo(
@@ -994,7 +1019,7 @@ export default function SolaWorshipApp() {
       if (!event.shiftKey || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
       if (focusedVerse == null || verseAnchor == null || !selectedBook || !selectedChapter) return;
       event.preventDefault();
-      const maxVerse = verseCountFor(selectedBook.name, selectedChapter);
+    const maxVerse = verseCountFor(selectedBook.name, selectedChapter, selectedVersion);
       let nextFocus = focusedVerse + (event.key === 'ArrowDown' ? 1 : -1);
       nextFocus = Math.max(1, Math.min(maxVerse, nextFocus));
       setFocusedVerse(nextFocus);
@@ -1006,14 +1031,11 @@ export default function SolaWorshipApp() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [mediaTab, bibleSubTab, bibleView, focusedVerse, verseAnchor, selectedBook, selectedChapter]);
+  }, [mediaTab, bibleSubTab, bibleView, focusedVerse, verseAnchor, selectedBook, selectedChapter, selectedVersion]);
 
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setVoiceSupported(false);
-      return undefined;
-    }
+    if (!SpeechRecognition) return undefined;
     try {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -1031,7 +1053,7 @@ export default function SolaWorshipApp() {
       };
       recognitionRef.current = recognition;
     } catch {
-      setVoiceSupported(false);
+      window.queueMicrotask(() => setVoiceSupported(false));
     }
     return undefined;
   }, []);
@@ -1039,7 +1061,7 @@ export default function SolaWorshipApp() {
   const startListening = async () => {
     if (!recognitionRef.current) return;
     if (listening) {
-      try { recognitionRef.current.stop(); } catch {}
+      try { recognitionRef.current.stop(); } catch { /* recognition may already be stopped */ }
       setListening(false);
       return;
     }
@@ -1054,19 +1076,17 @@ export default function SolaWorshipApp() {
     }
   };
 
-  const bibleTextFor = (book, chapter, verse) => (
+  const bibleTextFor = useCallback((book, chapter, verse) => (
     selectedVersion === 'yor' || selectedLanguage === 'en'
       ? getVerseText(book, chapter, verse, selectedVersion)
       : translateVerse(book, chapter, verse, selectedVersion, selectedLanguage)
-  );
+  ), [selectedLanguage, selectedVersion]);
+
+  const liveGuess = useMemo(() => aiQuery ? findLiveVerseMatch(aiQuery) : null, [aiQuery]);
 
   useEffect(() => {
-    if (!aiQuery) {
-      setLiveGuess(null);
-      return;
-    }
-    const match = findLiveVerseMatch(aiQuery);
-    setLiveGuess(match);
+    if (!aiQuery) return;
+    const match = liveGuess;
     if (match) {
       const { book, chapter, verse } = parseRef(match.ref);
       const base = getVerseText(book, chapter, verse, selectedVersion);
@@ -1080,10 +1100,10 @@ export default function SolaWorshipApp() {
           }
         })();
       } else {
-        setStagedContent({ kind: 'verse', book, chapter, verse, text: bibleTextFor(book, chapter, verse) });
+        window.queueMicrotask(() => setStagedContent({ kind: 'verse', book, chapter, verse, text: bibleTextFor(book, chapter, verse) }));
       }
     }
-  }, [aiQuery, selectedVersion, selectedLanguage]);
+  }, [aiQuery, bibleTextFor, liveGuess, selectedLanguage, selectedVersion]);
 
   const bibleVersions = Object.values(BIBLE_VERSION_FILES);
   const books = BIBLE_BOOKS[testament];
@@ -1242,11 +1262,11 @@ export default function SolaWorshipApp() {
   };
   const stageSlide = (presentation, slide) => {
     applyPresentationTheme(presentation);
-    setStagedContent({ kind: 'slide-deck', presentation, slide });
+    setStagedContent({ kind: 'slide-deck', presentation, slide, fontSize: slideFontSize });
   };
   const liveSlide = (presentation, slide) => {
     applyPresentationTheme(presentation);
-    pushLive({ kind: 'slide-deck', presentation, slide });
+    pushLive({ kind: 'slide-deck', presentation, slide, fontSize: slideFontSize });
   };
   const stageMediaBg = (item) => setStagedContent({ kind: 'media-bg', item });
   const liveMediaBg = (item) => pushLive({ kind: 'media-bg', item });
@@ -1304,28 +1324,12 @@ export default function SolaWorshipApp() {
       const data = JSON.parse(event.dataTransfer.getData('application/json'));
       if (data.dragKind === 'verse') setServiceOrder((current) => [...current, { id: nextServiceId++, name: `${data.book} ${data.chapter}:${data.verse}`, type: 'verse', duration: '—', content: verseContent(data.book, data.chapter, data.verse) }]);
       else if (data.dragKind === 'song') setServiceOrder((current) => [...current, { id: nextServiceId++, name: data.song.title, type: 'song', duration: '—', artist: data.song.artist, slides: data.slides }]);
-    } catch {}
-  };
-  const handleItemDrop = (event, targetId) => {
-    let data;
-    try { data = JSON.parse(event.dataTransfer.getData('application/json')); } catch { return; }
-    if (data.dragKind !== 'reorder') return;
-    event.preventDefault(); event.stopPropagation();
-    setDragOverItemId(null);
-    setServiceOrder((current) => {
-      const next = [...current];
-      const fromIndex = next.findIndex((item) => item.id === data.sourceId);
-      const toIndex = next.findIndex((item) => item.id === targetId);
-      if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return current;
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
-      return next;
-    });
+    } catch { /* ignore unsupported drag payloads */ }
   };
   const addVerseToService = (book, chapter, verse) => setServiceOrder((current) => [...current, { id: nextServiceId++, name: `${book} ${chapter}:${verse}`, type: 'verse', duration: '—', content: verseContent(book, chapter, verse) }]);
   const addSongToService = (song, slides) => setServiceOrder((current) => [...current, { id: nextServiceId++, name: song.title, type: 'song', duration: '—', artist: song.artist, slides, fontSize: songFontSize }]);
   const newProject = () => showConfirm('Start a new project? Unsaved changes will be lost.', () => { setServiceOrder([]); setProgramContent(null); setStagedContent({ kind: 'service', index: 0 }); setRadialOpen(false); });
-  const saveProject = () => { setRadialOpen(false); showPrompt('Save project as:', 'My Service', async (name) => { if (!name) return; try { await window.storage.set(`sola-worship:project:${name}`, JSON.stringify({ serviceOrder, obsScenes, audioChannels, outputs, bibleFontSize, songFontSize, themeItems, mediaItems, slidePresentations })); showAlert('Saved', `Project "${name}" saved.`); } catch { showAlert('Save failed', 'Storage unavailable.'); } }); };
+  const saveProject = () => { setRadialOpen(false); showPrompt('Save project as:', 'My Service', async (name) => { if (!name) return; try { await window.storage.set(`sola-worship:project:${name}`, JSON.stringify({ serviceOrder, obsScenes, audioChannels, outputs, bibleFontSize, songFontSize, slideFontSize, themeItems, mediaItems, slidePresentations })); showAlert('Saved', `Project "${name}" saved.`); } catch { showAlert('Save failed', 'Storage unavailable.'); } }); };
   const openMenuClicked = async (event) => { event.stopPropagation(); try { const list = await window.storage.list('sola-worship:project:'); setSavedProjects((list && list.keys) || []); } catch { setSavedProjects([]); } setOpenListVisible((current) => !current); };
   const loadProject = async (key) => {
     try {
@@ -1338,6 +1342,7 @@ export default function SolaWorshipApp() {
         if (data.outputs) setOutputs(data.outputs);
         if (data.bibleFontSize) setBibleFontSize(data.bibleFontSize);
         if (data.songFontSize) setSongFontSize(data.songFontSize);
+        if (data.slideFontSize) setSlideFontSize(data.slideFontSize);
         if (data.themeItems) setThemeItems(mergeBuiltInThemes(ensureCommunionTheme(data.themeItems)));
         if (data.mediaItems) setMediaItems(mergeBuiltInMedia(data.mediaItems));
         if (data.slidePresentations) setSlidePresentations(ensureCommunionPresentation(data.slidePresentations));
@@ -1447,7 +1452,7 @@ export default function SolaWorshipApp() {
           return;
         }
       }
-    } catch (err) {
+    } catch {
       // fallthrough to treat as lyrics
     }
     // treat input as raw lyrics
@@ -1612,7 +1617,7 @@ export default function SolaWorshipApp() {
   const plannerContentForPanel = (type) => {
     if (type === 'scripture' && stagedContent?.kind === 'verse') return { reference: `${stagedContent.book} ${stagedContent.chapter}:${stagedContent.verse}`, text: stagedContent.text, fontSize: stagedContent.fontSize || bibleFontSize };
     if (type === 'song-panel' && stagedContent?.kind === 'song-slide') return { label: stagedContent.slide.label || 'SONG', text: stagedContent.slide.text, fontSize: stagedContent.fontSize || songFontSize };
-    if (type === 'slide-panel' && stagedContent?.kind === 'slide-deck') return { title: stagedContent.presentation.name, text: stagedContent.slide.text, fontSize: stagedContent.slide.fontSize || 42 };
+    if (type === 'slide-panel' && stagedContent?.kind === 'slide-deck') return { title: stagedContent.presentation.name, text: stagedContent.slide.text, fontSize: stagedContent.fontSize || stagedContent.slide.fontSize || slideFontSize };
     return {};
   };
   const addObsSource = (type) => {
@@ -1693,7 +1698,7 @@ export default function SolaWorshipApp() {
       return source;
     }),
   } : scene));
-  const usePlannerPreviewInPanel = (source) => {
+  const applyPlannerPreviewToPanel = (source) => {
     const updates = plannerContentForPanel(source.type);
     if (Object.keys(updates).length === 0) {
       showAlert('Matching preview required', `Stage a ${source.type === 'scripture' ? 'Bible verse' : source.type === 'song-panel' ? 'song slide' : 'presentation slide'} in the Planner first, then click this button again.`);
@@ -1748,12 +1753,13 @@ export default function SolaWorshipApp() {
   };
   const startCountdown = (source) => {
     const seconds = Math.max(0, Number(source.seconds || source.initialSeconds || 0));
-    const updates = { initialSeconds: Number(source.initialSeconds || seconds), timerRunning: true, timerEndsAt: Date.now() + seconds * 1000 };
+    const updates = { initialSeconds: Number(source.initialSeconds || seconds), timerRunning: true, timerEndsAt: currentTimestamp() + seconds * 1000 };
     updateSourceFields(source.id, updates);
     updateProgramSourceFields(source.id, updates);
   };
   const pauseCountdown = (source) => {
-    const seconds = Math.max(0, Math.ceil((Number(source.timerEndsAt || Date.now()) - Date.now()) / 1000));
+    const now = currentTimestamp();
+    const seconds = Math.max(0, Math.ceil((Number(source.timerEndsAt || now) - now) / 1000));
     const updates = { seconds, timerRunning: false, timerEndsAt: null };
     updateSourceFields(source.id, updates);
     updateProgramSourceFields(source.id, updates);
@@ -1931,7 +1937,6 @@ export default function SolaWorshipApp() {
 
   const addPresentation = () => showPrompt('Presentation name:', 'New Presentation', (name) => { if (!name) return; const id = 'pres' + nextPresId++; setSlidePresentations((current) => [...current, { id, name, slides: [{ id: 'sl' + nextSlideId++, text: 'New slide' }] }]); setExpandedPresId(id); });
   const addSlideToPresentation = (presentationId) => setSlidePresentations((current) => current.map((presentation) => presentation.id === presentationId ? { ...presentation, slides: [...presentation.slides, { id: 'sl' + nextSlideId++, text: 'New slide' }] } : presentation));
-  const updateSlideText = (presentationId, slideId, text) => setSlidePresentations((current) => current.map((presentation) => presentation.id === presentationId ? { ...presentation, slides: presentation.slides.map((slide) => slide.id === slideId ? { ...slide, text } : slide) } : presentation));
   const updateSlideStyle = (presentationId, slideId, updates) => setSlidePresentations((current) => current.map((presentation) => presentation.id === presentationId ? { ...presentation, slides: presentation.slides.map((slide) => slide.id === slideId ? { ...slide, ...updates } : slide) } : presentation));
   const editSlide = (presentationId, slide) => setEditingSlide({ presentationId, slide });
   const deleteSlide = (presentationId, slideId) => setSlidePresentations((current) => current.map((presentation) => presentation.id === presentationId ? { ...presentation, slides: presentation.slides.filter((slide) => slide.id !== slideId) } : presentation));
@@ -1939,7 +1944,8 @@ export default function SolaWorshipApp() {
 
   const getBoxBackground = (content) => {
     if (content && content.kind === 'obs-scene') return '#000';
-    if (content && content.kind === 'media-bg') return (content.item && (content.item.dataUrl ? `url(${content.item.dataUrl}) center/cover` : content.item.css || content.item.color)) || '#2a2a2a';
+    if (content && content.kind === 'media-bg') return (content.item && (content.item.kind === 'video' ? '#000' : content.item.dataUrl ? `url(${content.item.dataUrl}) center/cover` : content.item.css || content.item.color)) || '#2a2a2a';
+    if (activeBackground?.kind === 'video') return '#000';
     if (activeBackground && activeBackground.dataUrl) return `url(${activeBackground.dataUrl}) center/cover`;
     if (activeBackground && activeBackground.color) return activeBackground.color;
     if (activeBackground && activeBackground.css) return activeBackground.css;
@@ -2013,7 +2019,7 @@ export default function SolaWorshipApp() {
         `width=${targetScreen.availWidth}`,
         `height=${targetScreen.availHeight}`,
       ].join(',');
-      const win = window.open('', `sola-output-${output.id}-${Date.now()}`, popupFeatures);
+      const win = window.open('', `sola-output-${output.id}-${currentTimestamp()}`, popupFeatures);
       if (!win) { showAlert('Output blocked', 'Allow popups, then send Program to the output again.'); return; }
       win.moveTo(targetScreen.availLeft, targetScreen.availTop);
       win.resizeTo(targetScreen.availWidth, targetScreen.availHeight);
@@ -2095,7 +2101,7 @@ export default function SolaWorshipApp() {
     if (content.kind === 'slide-deck') return (
       <div style={{ textAlign: content.slide.align || 'center', width: '100%' }}>
         <div style={{ fontSize: options.projector ? 'clamp(14px, 1.25vw, 24px)' : '10px', color: '#e7c594', fontWeight: '700', marginBottom: options.projector ? '2.5vh' : '8px', textShadow: '0 2px 8px rgba(0,0,0,0.9)' }}>{content.presentation.name.toUpperCase()}</div>
-        <div style={{ fontSize: options.projector ? `clamp(38px, 4.6vw, ${content.slide.fontSize || 64}px)` : `${Math.max(18, Math.round((content.slide.fontSize || 54) * 0.48))}px`, fontFamily: content.slide.fontFamily || 'Georgia, "Times New Roman", serif', fontWeight: content.slide.bold === false ? '400' : '700', color: 'white', lineHeight: '1.3', whiteSpace: 'pre-wrap', padding: options.projector ? '0 7vw' : '0 16px', textShadow: '0 3px 14px rgba(0,0,0,0.98), 0 1px 3px rgba(0,0,0,1)' }}>{content.slide.text}</div>
+        <div style={{ fontSize: options.projector ? `clamp(${content.fontSize || content.slide.fontSize || slideFontSize}px, 4.6vw, ${(content.fontSize || content.slide.fontSize || slideFontSize) + 24}px)` : `${Math.max(18, Math.round((content.fontSize || content.slide.fontSize || slideFontSize) * 0.48))}px`, fontFamily: content.slide.fontFamily || 'Georgia, "Times New Roman", serif', fontWeight: content.slide.bold === false ? '400' : '700', color: 'white', lineHeight: '1.3', whiteSpace: 'pre-wrap', padding: options.projector ? '0 7vw' : '0 16px', textShadow: '0 3px 14px rgba(0,0,0,0.98), 0 1px 3px rgba(0,0,0,1)' }}>{content.slide.text}</div>
       </div>
     );
     if (content.kind === 'service') {
@@ -2109,7 +2115,7 @@ export default function SolaWorshipApp() {
 
   const renderOutputContent = (content, options = {}) => {
     const splitEligible = ['verse', 'song-slide', 'slide-deck'].includes(content?.kind);
-    const cameraStream = cameraStreams[splitCameraSourceId];
+    const cameraStream = cameraStreams[activeSplitCameraSourceId];
     if (!splitScreenMode || !splitEligible || !cameraStream) return renderContent(content, options);
     const cameraFirst = splitCameraSide !== 'right';
     const cameraPanel = (
@@ -2138,10 +2144,20 @@ export default function SolaWorshipApp() {
     return renderObsSource(sceneSource, hideText, cameraStreams, screenStreams);
   };
 
-  const deckForStaged = () => {
-    if (stagedContent?.kind === 'song-slide' && activeSongSlides.length > 1) return { slides: activeSongSlides, activeId: stagedContent.slide.id, onPick: (slide) => setStagedContent({ kind: 'song-slide', song: stagedContent.song, slide, fontSize: songFontSize }), onPickLive: (slide) => pushLive({ kind: 'song-slide', song: stagedContent.song, slide, fontSize: songFontSize }) };
-    if (stagedContent?.kind === 'slide-deck' && stagedContent.presentation.slides.length > 1) return { slides: stagedContent.presentation.slides, activeId: stagedContent.slide.id, onPick: (slide) => setStagedContent({ kind: 'slide-deck', presentation: stagedContent.presentation, slide }), onPickLive: (slide) => pushLive({ kind: 'slide-deck', presentation: stagedContent.presentation, slide }) };
-    return null;
+  const deck = stagedContent?.kind === 'song-slide' && activeSongSlides.length > 1
+    ? { type: 'song', slides: activeSongSlides, activeId: stagedContent.slide.id }
+    : stagedContent?.kind === 'slide-deck' && stagedContent.presentation.slides.length > 1
+      ? { type: 'presentation', slides: stagedContent.presentation.slides, activeId: stagedContent.slide.id }
+      : null;
+  const pickDeckSlide = (slide, live = false) => {
+    const content = deck?.type === 'song'
+      ? { kind: 'song-slide', song: stagedContent.song, slide, fontSize: songFontSize }
+      : deck?.type === 'presentation'
+        ? { kind: 'slide-deck', presentation: stagedContent.presentation, slide, fontSize: slideFontSize }
+        : null;
+    if (!content) return;
+    if (live) pushLive(content);
+    else setStagedContent(content);
   };
 
   const activeOutputs = outputs.filter((output) => output.active);
@@ -2396,7 +2412,7 @@ export default function SolaWorshipApp() {
                   </div>
                   {source.type === 'color' && <input type="color" value={source.color} onChange={(event) => updateSourceField(source.id, 'color', event.target.value)} style={{ marginTop: '5px', width: '100%', height: '18px', border: 'none', borderRadius: '3px' }} />}
                   {source.type === 'text' && <div onClick={(event) => event.stopPropagation()}><textarea rows={3} value={source.text} onChange={(event) => updateSourceField(source.id, 'text', event.target.value)} style={{ marginTop: '5px', width: '100%', padding: '5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '10px', lineHeight: 1.35, resize: 'vertical', boxSizing: 'border-box' }} /><div style={{ display: 'grid', gridTemplateColumns: '1fr 34px', gap: '5px', marginTop: '4px' }}><select value={source.template || 'clean'} onChange={(event) => updateSourceField(source.id, 'template', event.target.value)} style={{ minWidth: 0, background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '9px' }}><option value="clean">Clean text</option><option value="title">Classic title</option><option value="scripture">Scripture panel</option><option value="caption">Caption bar</option></select><input type="color" value={source.fontColor || '#ffffff'} onChange={(event) => updateSourceField(source.id, 'fontColor', event.target.value)} title="Font color" style={{ width: '34px', height: '24px', border: 0, padding: 0, background: 'none' }} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px', marginTop: '4px' }}><select value={source.fontFamily || 'Arial, sans-serif'} onChange={(event) => updateSourceField(source.id, 'fontFamily', event.target.value)} style={{ minWidth: 0, background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '9px' }}><option value="Arial, sans-serif">Arial</option><option value={'Georgia, "Times New Roman", serif'}>Georgia</option><option value="Verdana, sans-serif">Verdana</option></select><input type="number" min="12" max="160" value={source.fontSize || 42} onChange={(event) => updateSourceField(source.id, 'fontSize', Number(event.target.value))} title="Font size" style={{ minWidth: 0, padding: '3px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '9px' }} /></div></div>}
-                  {scenePanelTypes.includes(source.type) && <div onClick={(event) => event.stopPropagation()} style={{ marginTop: '5px' }}><input value={source.type === 'scripture' ? source.reference : source.type === 'song-panel' ? source.label : source.title} onChange={(event) => updateSourceField(source.id, source.type === 'scripture' ? 'reference' : source.type === 'song-panel' ? 'label' : 'title', event.target.value)} placeholder="Heading" style={{ width: '100%', padding: '4px 5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: '#d4a574', fontSize: '9px', boxSizing: 'border-box' }} /><textarea rows={4} value={source.text} onChange={(event) => updateSourceField(source.id, 'text', event.target.value)} style={{ marginTop: '4px', width: '100%', padding: '5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '10px', lineHeight: 1.35, resize: 'vertical', boxSizing: 'border-box' }} /><button onClick={() => usePlannerPreviewInPanel(source)} style={{ width: '100%', marginTop: '4px', padding: '5px', background: 'rgba(212,165,116,0.15)', border: '1px solid #d4a574', borderRadius: '3px', color: '#d4a574', fontSize: '9px', fontWeight: '700', cursor: 'pointer' }}>Use current Planner preview</button><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 30px', gap: '4px', marginTop: '4px' }}><button onClick={() => applyPanelSide(source.id, 'left')} style={{ padding: '4px', background: source.x < 50 ? 'rgba(74,222,128,.14)' : 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.15)', borderRadius: '3px', color: 'white', fontSize: '8px', cursor: 'pointer' }}>Panel left</button><button onClick={() => applyPanelSide(source.id, 'right')} style={{ padding: '4px', background: source.x >= 50 ? 'rgba(74,222,128,.14)' : 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.15)', borderRadius: '3px', color: 'white', fontSize: '8px', cursor: 'pointer' }}>Panel right</button><input type="color" value={source.panelColor || '#17120f'} onChange={(event) => updateSourceField(source.id, 'panelColor', event.target.value)} title="Panel color" style={{ width: '30px', height: '24px', border: 0, padding: 0, background: 'none' }} /></div></div>}
+                  {scenePanelTypes.includes(source.type) && <div onClick={(event) => event.stopPropagation()} style={{ marginTop: '5px' }}><input value={source.type === 'scripture' ? source.reference : source.type === 'song-panel' ? source.label : source.title} onChange={(event) => updateSourceField(source.id, source.type === 'scripture' ? 'reference' : source.type === 'song-panel' ? 'label' : 'title', event.target.value)} placeholder="Heading" style={{ width: '100%', padding: '4px 5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: '#d4a574', fontSize: '9px', boxSizing: 'border-box' }} /><textarea rows={4} value={source.text} onChange={(event) => updateSourceField(source.id, 'text', event.target.value)} style={{ marginTop: '4px', width: '100%', padding: '5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '10px', lineHeight: 1.35, resize: 'vertical', boxSizing: 'border-box' }} /><button onClick={() => applyPlannerPreviewToPanel(source)} style={{ width: '100%', marginTop: '4px', padding: '5px', background: 'rgba(212,165,116,0.15)', border: '1px solid #d4a574', borderRadius: '3px', color: '#d4a574', fontSize: '9px', fontWeight: '700', cursor: 'pointer' }}>Use current Planner preview</button><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 30px', gap: '4px', marginTop: '4px' }}><button onClick={() => applyPanelSide(source.id, 'left')} style={{ padding: '4px', background: source.x < 50 ? 'rgba(74,222,128,.14)' : 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.15)', borderRadius: '3px', color: 'white', fontSize: '8px', cursor: 'pointer' }}>Panel left</button><button onClick={() => applyPanelSide(source.id, 'right')} style={{ padding: '4px', background: source.x >= 50 ? 'rgba(74,222,128,.14)' : 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.15)', borderRadius: '3px', color: 'white', fontSize: '8px', cursor: 'pointer' }}>Panel right</button><input type="color" value={source.panelColor || '#17120f'} onChange={(event) => updateSourceField(source.id, 'panelColor', event.target.value)} title="Panel color" style={{ width: '30px', height: '24px', border: 0, padding: 0, background: 'none' }} /></div></div>}
                   {source.type === 'image' && source.dataUrl && <div onClick={(event) => event.stopPropagation()} style={{ display: 'flex', gap: '4px', marginTop: '5px' }}><button onClick={() => updateSourceFields(source.id, { x: 0, y: 0, width: 100, height: 100, objectFit: 'cover' })} style={{ flex: 1, padding: '4px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '3px', color: 'white', fontSize: '9px', cursor: 'pointer' }}>Full page</button><button onClick={() => updateSourceFields(source.id, { x: 65, y: 5, width: 28, height: 28, objectFit: 'contain' })} style={{ flex: 1, padding: '4px', background: 'rgba(212,165,116,0.12)', border: '1px solid rgba(212,165,116,0.4)', borderRadius: '3px', color: '#d4a574', fontSize: '9px', cursor: 'pointer' }}>Resizable</button></div>}
                   {source.type === 'lower-third' && <><input value={source.title} onChange={(event) => updateSourceField(source.id, 'title', event.target.value)} style={{ marginTop: '5px', width: '100%', padding: '3px 5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '10px', boxSizing: 'border-box' }} /><input value={source.subtitle} onChange={(event) => updateSourceField(source.id, 'subtitle', event.target.value)} style={{ marginTop: '4px', width: '100%', padding: '3px 5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '10px', boxSizing: 'border-box' }} /></>}
                   {source.type === 'browser' && <input value={source.url} onChange={(event) => updateSourceField(source.id, 'url', event.target.value)} style={{ marginTop: '5px', width: '100%', padding: '3px 5px', background: '#0f0f0f', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', color: 'white', fontSize: '10px', boxSizing: 'border-box' }} />}
@@ -2495,8 +2511,6 @@ export default function SolaWorshipApp() {
       </div>
     );
   }
-
-  const deck = deckForStaged();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f0f0f', color: 'white', fontFamily: 'system-ui, -apple-system, sans-serif', overflow: 'hidden', position: 'relative' }}>
@@ -2691,7 +2705,7 @@ export default function SolaWorshipApp() {
                 {themeItems.map((theme) => (
                   <div key={theme.id} style={{ position: 'relative' }}>
                     <button onClick={() => applyBackground(theme)} style={{ width: '100%', height: '50px', borderRadius: '5px', border: activeBackground.id === theme.id ? '2px solid #d4a574' : '1px solid rgba(255,255,255,0.15)', background: theme.dataUrl && theme.kind !== 'video' ? `url(${theme.dataUrl}) center/cover` : theme.css || theme.color || '#222', backgroundSize: theme.animated ? '180% 180%' : 'cover', ...animStyleFor(theme.anim), cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
-                      {theme.kind === 'video' && theme.dataUrl && <video src={theme.dataUrl} muted autoPlay loop={theme.loop !== false} playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
+                      {theme.kind === 'video' && theme.dataUrl && <LibraryVideoPreview item={theme} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
                       <span style={{ position: 'absolute', bottom: '3px', left: '5px', maxWidth: '70%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '9px', color: 'white', background: 'rgba(0,0,0,0.65)', padding: '1px 4px', borderRadius: '2px' }}>{theme.name}</span>
                     </button>
                     {theme.imported && <button onClick={() => removeTheme(theme.id)} title="Remove theme" style={{ position: 'absolute', top: '3px', right: '3px', width: '22px', height: '22px', display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '3px', color: '#f87171', cursor: 'pointer' }}><Trash2 size={11} /></button>}
@@ -2734,7 +2748,7 @@ export default function SolaWorshipApp() {
                 {mediaItems.map((mediaItem) => (
                   <div key={mediaItem.id} style={{ display: 'flex', gap: '4px' }}>
                     <button onClick={() => stageMediaBg(mediaItem)} onDoubleClick={() => liveMediaBg(mediaItem)} style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '8px', padding: '7px', background: stagedContent?.kind === 'media-bg' && stagedContent.item.id === mediaItem.id ? 'rgba(212,165,116,0.2)' : 'rgba(255,255,255,0.05)', border: '1px solid ' + (stagedContent?.kind === 'media-bg' && stagedContent.item.id === mediaItem.id ? '#d4a574' : 'rgba(255,255,255,0.1)'), borderRadius: '4px', cursor: 'pointer', textAlign: 'left' }}>
-                      <div style={{ width: '30px', height: '24px', borderRadius: '3px', background: mediaItem.dataUrl && mediaItem.kind !== 'video' ? `url(${mediaItem.dataUrl}) center/cover` : mediaItem.css || mediaItem.color || '#222', ...animStyleFor(mediaItem.anim), flexShrink: 0, overflow: 'hidden' }}>{mediaItem.kind === 'video' && mediaItem.dataUrl && <video src={mediaItem.dataUrl} muted autoPlay loop={mediaItem.loop !== false} playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>
+                      <div style={{ width: '30px', height: '24px', borderRadius: '3px', background: mediaItem.dataUrl && mediaItem.kind !== 'video' ? `url(${mediaItem.dataUrl}) center/cover` : mediaItem.css || mediaItem.color || '#222', ...animStyleFor(mediaItem.anim), flexShrink: 0, overflow: 'hidden' }}>{mediaItem.kind === 'video' && mediaItem.dataUrl && <LibraryVideoPreview item={mediaItem} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>
                       <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                         <span style={{ fontSize: '11px', color: 'white', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mediaItem.name}</span>
                         <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.4)' }}>{mediaItem.category || mediaItem.kind} · {mediaItem.kind}</span>
@@ -2750,6 +2764,16 @@ export default function SolaWorshipApp() {
           )}
           {mediaTab === 'slides' && (
             <div style={{ padding: '0 12px 12px', flex: 1, overflowY: 'auto' }}>
+              <label style={{ display: 'grid', gridTemplateColumns: '62px 1fr 40px', alignItems: 'center', gap: '6px', marginBottom: '10px', color: 'rgba(255,255,255,0.6)', fontSize: '9px' }}>
+                Slide size
+                <input type="range" min="24" max="150" step="2" value={slideFontSize} onChange={(event) => {
+                  const size = Number(event.target.value);
+                  setSlideFontSize(size);
+                  setStagedContent((content) => content?.kind === 'slide-deck' ? { ...content, fontSize: size } : content);
+                  setProgramContent((content) => content?.kind === 'slide-deck' ? { ...content, fontSize: size } : content);
+                }} style={{ width: '100%', accentColor: '#d4a574' }} />
+                <span style={{ textAlign: 'right', color: '#d4a574' }}>{slideFontSize}px</span>
+              </label>
               {slidePresentations.map((presentation) => (
                 <div key={presentation.id} style={{ marginBottom: '8px', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '5px', overflow: 'hidden' }}>
                   <div onClick={() => setExpandedPresId(expandedPresId === presentation.id ? null : presentation.id)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: 'rgba(255,255,255,0.04)', cursor: 'pointer' }}>
@@ -2781,7 +2805,7 @@ export default function SolaWorshipApp() {
               </div>
               <label style={{ display: 'grid', gridTemplateColumns: '62px 1fr 34px', alignItems: 'center', gap: '6px', marginBottom: '8px', color: 'rgba(255,255,255,0.6)', fontSize: '9px' }}>
                 Verse size
-                <input type="range" min="24" max="72" step="2" value={bibleFontSize} onChange={(event) => {
+                <input type="range" min="24" max="150" step="2" value={bibleFontSize} onChange={(event) => {
                   const size = Number(event.target.value);
                   setBibleFontSize(size);
                   setStagedContent((content) => content?.kind === 'verse' ? { ...content, fontSize: size } : content);
@@ -2817,7 +2841,7 @@ export default function SolaWorshipApp() {
                       <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.4)', marginBottom: '6px' }}>{filteredBooks.length} books</div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
                         {filteredBooks.map((book) => (
-                          <button key={book.name} onClick={() => { setSelectedBook(book); setBibleView('chapters'); }} style={{ padding: '8px 4px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: 'rgba(255,255,255,0.8)', fontSize: '10px', cursor: 'pointer' }}>{book.name.toUpperCase()}</button>
+                          <button key={book.name} onClick={() => { setSelectedBook(book); setSelectedChapter(null); setSelectedVerses([]); setVerseAnchor(null); setFocusedVerse(null); setBibleView('chapters'); }} style={{ padding: '8px 4px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: 'rgba(255,255,255,0.8)', fontSize: '10px', cursor: 'pointer' }}>{book.name.toUpperCase()}</button>
                         ))}
                       </div>
                     </>
@@ -2828,7 +2852,7 @@ export default function SolaWorshipApp() {
                       <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)', marginBottom: '6px' }}>{selectedBook.chapters} chapters</div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px' }}>
                         {Array.from({ length: selectedBook.chapters }, (_, index) => index + 1).map((chapter) => (
-                          <button key={chapter} onClick={() => { setSelectedChapter(chapter); setBibleView('verses'); }} style={{ padding: '7px 0', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: 'rgba(255,255,255,0.8)', fontSize: '11px', cursor: 'pointer' }}>{chapter}</button>
+                          <button key={chapter} onClick={() => { setSelectedChapter(chapter); setSelectedVerses([]); setVerseAnchor(null); setFocusedVerse(null); setBibleView('verses'); }} style={{ padding: '7px 0', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: 'rgba(255,255,255,0.8)', fontSize: '11px', cursor: 'pointer' }}>{chapter}</button>
                         ))}
                       </div>
                     </>
@@ -2944,7 +2968,7 @@ export default function SolaWorshipApp() {
                 {deck && (
                   <div onClick={(event) => event.stopPropagation()} style={{ display: 'flex', gap: '4px', overflowX: 'auto', padding: '5px 8px', background: 'rgba(0,0,0,0.4)' }}>
                     {deck.slides.map((slide) => (
-                      <button key={slide.id} onClick={() => deck.onPick(slide)} onDoubleClick={() => deck.onPickLive(slide)} style={{ flexShrink: 0, padding: '4px 8px', background: deck.activeId === slide.id ? '#d4a574' : 'rgba(255,255,255,0.1)', border: 'none', borderRadius: '3px', color: deck.activeId === slide.id ? '#1a1a1a' : 'white', fontSize: '10px', cursor: 'pointer' }}>{slide.label || slide.text.slice(0, 14)}</button>
+                      <button key={slide.id} onClick={() => pickDeckSlide(slide)} onDoubleClick={() => pickDeckSlide(slide, true)} style={{ flexShrink: 0, padding: '4px 8px', background: deck.activeId === slide.id ? '#d4a574' : 'rgba(255,255,255,0.1)', border: 'none', borderRadius: '3px', color: deck.activeId === slide.id ? '#1a1a1a' : 'white', fontSize: '10px', cursor: 'pointer' }}>{slide.label || slide.text.slice(0, 14)}</button>
                     ))}
                   </div>
                 )}

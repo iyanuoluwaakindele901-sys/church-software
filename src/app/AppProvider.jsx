@@ -1,5 +1,7 @@
-import React, { createContext, useState } from 'react';
+import { createContext, useState } from 'react';
 
+// This context intentionally lives beside its provider so the app has one shared entry point.
+// eslint-disable-next-line react-refresh/only-export-components
 export const AppContext = createContext(null);
 
 export default function AppProvider({ children }) {

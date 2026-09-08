@@ -9,7 +9,7 @@ export async function translateText(text, targetLang) {
     if (!res.ok) return `${text} [translation unavailable]`;
     const data = await res.json();
     return data.translatedText || `${text} [translation unavailable]`;
-  } catch (err) {
+  } catch {
     return `${text} [translation failed]`;
   }
 }

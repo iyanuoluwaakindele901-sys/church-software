@@ -116,7 +116,7 @@ export async function fetchBibleVersion(version) {
   const info = BIBLE_VERSION_FILES[version];
   if (!info) throw new Error(`Bible version ${version} is not configured.`);
   BIBLE_LOAD_PROMISES[version] = (async () => {
-    const response = await fetch(`/bibles/${info.file}`);
+    const response = await fetch(`./bibles/${info.file}`);
     if (!response.ok) throw new Error(`Failed to load local Bible file ${info.file} (${response.status}).`);
     const loaded = info.format === 'vpl'
       ? parseVplBible(version, await response.text())

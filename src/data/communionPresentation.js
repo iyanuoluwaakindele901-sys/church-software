@@ -7,7 +7,7 @@ export const COMMUNION_THEME = {
   id: COMMUNION_THEME_ID,
   name: 'Holy Communion',
   kind: 'image',
-  css: 'linear-gradient(rgba(12, 7, 4, 0.66), rgba(12, 7, 4, 0.76)), url("/themes/holy-communion.jpg") center/cover no-repeat',
+  css: 'linear-gradient(rgba(12, 7, 4, 0.66), rgba(12, 7, 4, 0.76)), url("./themes/holy-communion.jpg") center/cover no-repeat',
   imported: false,
   credit: 'Photo by James Coleman on Unsplash',
 };

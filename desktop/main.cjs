@@ -1,12 +1,16 @@
-const { app, BrowserWindow, ipcMain, screen, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, session } = require('electron');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs/promises');
 const https = require('node:https');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const { ObsBridge } = require('./obsBridge.cjs');
 
 const isDev = process.argv.includes('--dev');
 const devPort = 5180;
 const outputWindows = new Map();
 let devServerProcess = null;
+const obsBridge = new ObsBridge();
 
 function devServerReady() {
   return new Promise((resolve) => {
@@ -119,6 +123,81 @@ app.whenReady().then(async () => {
     return { ok: true };
   });
 
+  ipcMain.handle('sola:import-media', async (event, destination) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showOpenDialog(owner, {
+      title: destination === 'theme' ? 'Import theme media' : 'Import media',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Images and videos', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'jfif', 'mp4', 'webm', 'mov', 'm4v'] }],
+    });
+    if (result.canceled) return [];
+    const mediaDirectory = path.join(app.getPath('userData'), 'media');
+    await fs.mkdir(mediaDirectory, { recursive: true });
+    return Promise.all(result.filePaths.map(async (sourcePath) => {
+      const extension = path.extname(sourcePath).toLowerCase();
+      const baseName = path.basename(sourcePath, extension).replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'media';
+      const storedPath = path.join(mediaDirectory, `${baseName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${extension}`);
+      await fs.copyFile(sourcePath, storedPath);
+      return {
+        name: path.basename(sourcePath),
+        kind: ['.mp4', '.webm', '.mov', '.m4v'].includes(extension) ? 'video' : 'image',
+        dataUrl: pathToFileURL(storedPath).href,
+        storagePath: storedPath,
+      };
+    }));
+  });
+
+  ipcMain.handle('sola:remove-media-file', async (_event, storedPath) => {
+    if (!storedPath) return { removed: false };
+    const mediaDirectory = path.resolve(app.getPath('userData'), 'media');
+    const target = path.resolve(String(storedPath));
+    const relative = path.relative(mediaDirectory, target);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Invalid media file path.');
+    await fs.unlink(target).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    return { removed: true };
+  });
+
+  ipcMain.handle('sola:obs-connect', (_event, settings) => obsBridge.connect(settings));
+  ipcMain.handle('sola:obs-disconnect', () => { obsBridge.disconnect(); return { connected: false }; });
+  ipcMain.handle('sola:obs-status', () => obsBridge.status());
+  ipcMain.handle('sola:obs-configure-stream', (_event, settings) => obsBridge.configureStream(settings));
+  ipcMain.handle('sola:obs-start-stream', () => obsBridge.startStream());
+  ipcMain.handle('sola:obs-stop-stream', () => obsBridge.stopStream());
+  ipcMain.handle('sola:obs-start-virtual-camera', () => obsBridge.startVirtualCamera());
+  ipcMain.handle('sola:obs-stop-virtual-camera', () => obsBridge.stopVirtualCamera());
+  ipcMain.handle('sola:save-stream-settings', async (_event, settings = {}) => {
+    const settingsFile = path.join(app.getPath('userData'), 'stream-settings.json');
+    const publicSettings = {
+      host: String(settings.host || '127.0.0.1'),
+      port: Number(settings.port) || 4455,
+      provider: String(settings.provider || 'youtube'),
+      server: String(settings.server || ''),
+    };
+    if (safeStorage.isEncryptionAvailable()) {
+      publicSettings.secrets = safeStorage.encryptString(JSON.stringify({
+        password: String(settings.password || ''),
+        key: String(settings.key || ''),
+      })).toString('base64');
+    }
+    await fs.writeFile(settingsFile, JSON.stringify(publicSettings, null, 2), 'utf8');
+    return { saved: true, secretsSaved: Boolean(publicSettings.secrets) };
+  });
+  ipcMain.handle('sola:load-stream-settings', async () => {
+    const settingsFile = path.join(app.getPath('userData'), 'stream-settings.json');
+    try {
+      const settings = JSON.parse(await fs.readFile(settingsFile, 'utf8'));
+      if (settings.secrets && safeStorage.isEncryptionAvailable()) {
+        Object.assign(settings, JSON.parse(safeStorage.decryptString(Buffer.from(settings.secrets, 'base64'))));
+      }
+      delete settings.secrets;
+      return settings;
+    } catch {
+      return null;
+    }
+  });
+
   createController();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createController();
@@ -129,6 +208,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  obsBridge.disconnect();
   if (devServerProcess && !devServerProcess.killed) devServerProcess.kill();
   if (process.platform !== 'darwin') app.quit();
 });

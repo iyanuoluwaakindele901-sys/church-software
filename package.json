@@ -1,7 +1,11 @@
 {
   "name": "sola-worship-app",
+  "productName": "Sola Worship",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Church presentation, projection, recording, and live-stream control studio.",
+  "author": "Sola Worship",
+  "main": "desktop/main.cjs",
   "type": "module",
   "scripts": {
     "predev": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
@@ -9,6 +13,8 @@
     "dev:https": "npm run dev -- --host 0.0.0.0",
     "https:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1 -InstallCA",
     "build": "vite build",
+    "release:dir": "npm run build && electron-builder --dir",
+    "release:windows": "npm run build && electron-builder --win nsis",
     "lint": "eslint .",
     "prepreview": "powershell -ExecutionPolicy Bypass -File scripts/setup-local-https.ps1",
     "preview": "vite preview",
@@ -17,7 +23,9 @@
     "test:bible-library": "node scripts/bible-library-test.mjs",
     "test:song-library": "node scripts/song-library-test.mjs",
     "desktop": "electron desktop/main.cjs",
-    "desktop:dev": "electron desktop/main.cjs --dev"
+    "desktop:dev": "electron desktop/main.cjs --dev",
+    "test:obs-bridge": "node scripts/obs-bridge-test.cjs",
+    "test:release": "npm run lint && npm run test:bible-library && npm run test:obs-bridge && npm run build"
   },
   "dependencies": {
     "qrcode": "^1.5.1",
@@ -31,11 +39,37 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "electron": "^39.2.7",
     "globals": "^17.7.0",
     "vite": "^8.2.0"
+  },
+  "build": {
+    "appId": "com.solaworship.desktop",
+    "productName": "Sola Worship",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop/**/*",
+      "camera-signaling-server.js",
+      "certificate-bootstrap-server.js",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "Sola-Worship-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }

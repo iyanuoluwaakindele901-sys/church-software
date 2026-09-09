@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CameraView } from '../components/common/CameraView';
 import { CameraManager } from '../cameras/CameraManager';
 import { Modal } from '../components/common/Modal';
@@ -34,6 +34,9 @@ import * as Audio from '../audio';
 import {
   SolaRecordingEngine, chooseRecordingFile, createRecordingFilename, getSupportedRecordingFormats,
 } from '../recording/engine';
+
+const StreamingManager = lazy(() => import('../components/common/StreamingManager').then((module) => ({ default: module.StreamingManager })));
+const SystemCheck = lazy(() => import('../components/common/SystemCheck').then((module) => ({ default: module.SystemCheck })));
 
 let nextServiceId = 1000;
 let nextSceneId = 10;
@@ -334,6 +337,8 @@ export default function SolaWorshipApp() {
   const projectorFrameRelayRequestedRef = useRef(false);
   const projectorNativeCameraStreamsRef = useRef(new Set());
   const [projectorFrameRelayEnabled, setProjectorFrameRelayEnabled] = useState(false);
+  const [projectorRelayResolution, setProjectorRelayResolution] = useState('auto');
+  const [projectorRelayFps, setProjectorRelayFps] = useState(25);
   const [projectorStreamRevision, setProjectorStreamRevision] = useState(0);
   const [cameraSourcePicker, setCameraSourcePicker] = useState(null);
   const [cameraDevices, setCameraDevices] = useState([]);
@@ -353,6 +358,19 @@ export default function SolaWorshipApp() {
   const plannerScene = { id: 'scene-planner', name: '📺 Planner Content', locked: true, sources: [{ id: 'src-planner', type: 'planner', name: 'Live Planner Preview', visible: true }] };
   const allScenes = [plannerScene, ...obsScenes];
   const activeObsScene = allScenes.find((scene) => scene.id === activeObsSceneId) || allScenes[0];
+  const projectorRelayProfile = useMemo(() => {
+    const profiles = {
+      '480p': { width: 854, height: 480, quality: 0.65 },
+      '720p': { width: 1280, height: 720, quality: 0.7 },
+      '1080p': { width: 1920, height: 1080, quality: 0.74 },
+    };
+    if (projectorRelayResolution !== 'auto') return { ...profiles[projectorRelayResolution], fps: projectorRelayFps };
+    const cores = navigator.hardwareConcurrency || 4;
+    const memory = navigator.deviceMemory || 4;
+    if (cores >= 8 && memory >= 8) return { ...profiles['1080p'], fps: Math.min(projectorRelayFps, 30) };
+    if (cores >= 6 && memory >= 4) return { ...profiles['720p'], fps: Math.min(projectorRelayFps, 25) };
+    return { ...profiles['480p'], fps: Math.min(projectorRelayFps, 15) };
+  }, [projectorRelayFps, projectorRelayResolution]);
 
   const [transitionType, setTransitionType] = useState('Fade');
   const [transitionDuration, setTransitionDuration] = useState(200);
@@ -363,6 +381,8 @@ export default function SolaWorshipApp() {
   const recordingFormats = useMemo(() => getSupportedRecordingFormats(), []);
   const initialRecordingFormat = recordingFormats[0] || { id: 'webm', extension: 'webm' };
   const [recordingManagerOpen, setRecordingManagerOpen] = useState(false);
+  const [streamingManagerOpen, setStreamingManagerOpen] = useState(false);
+  const [systemCheckOpen, setSystemCheckOpen] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState('idle');
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [recordingError, setRecordingError] = useState('');
@@ -431,11 +451,11 @@ export default function SolaWorshipApp() {
       if (projectorFrameRelayRequestedRef.current && projectorChannelRef.current) {
         relays.forEach((relay) => {
           if (projectorNativeCameraStreamsRef.current.has(relay.sourceId)) return;
-          if (time - relay.lastSent < 160 || relay.video.readyState < 2) return;
+          if (time - relay.lastSent < 1000 / projectorRelayProfile.fps || relay.video.readyState < 2) return;
           if (relay.awaitingAck) return;
           const sourceWidth = relay.video.videoWidth || 960;
           const sourceHeight = relay.video.videoHeight || 540;
-          const scale = Math.min(1, 640 / sourceWidth, 360 / sourceHeight);
+          const scale = Math.min(1, projectorRelayProfile.width / sourceWidth, projectorRelayProfile.height / sourceHeight);
           const width = Math.max(2, Math.round(sourceWidth * scale));
           const height = Math.max(2, Math.round(sourceHeight * scale));
           if (relay.canvas.width !== width) relay.canvas.width = width;
@@ -444,11 +464,22 @@ export default function SolaWorshipApp() {
           if (!context) return;
           try {
             context.drawImage(relay.video, 0, 0, width, height);
-            const frame = relay.canvas.toDataURL('image/jpeg', 0.55);
             relay.sequence += 1;
             relay.awaitingAck = true;
-            projectorChannelRef.current?.postMessage({ type: 'camera-frame', sourceId: relay.sourceId, sequence: relay.sequence, frame });
             relay.lastSent = time;
+            const sequence = relay.sequence;
+            relay.canvas.toBlob(async (blob) => {
+              if (!blob || !projectorChannelRef.current) {
+                relay.awaitingAck = false;
+                return;
+              }
+              try {
+                const frameBuffer = await blob.arrayBuffer();
+                projectorChannelRef.current?.postMessage({ type: 'camera-frame', sourceId: relay.sourceId, sequence, frameBuffer, mimeType: blob.type });
+              } catch {
+                relay.awaitingAck = false;
+              }
+            }, 'image/jpeg', projectorRelayProfile.quality);
           } catch {
             // WebRTC remains the primary path when a frame cannot be sampled.
           }
@@ -462,7 +493,7 @@ export default function SolaWorshipApp() {
       window.removeEventListener('sola-camera-frame-ack', handleFrameAck);
       relays.forEach((relay) => { relay.video.srcObject = null; });
     };
-  }, [cameraStreams, isProjectorMode, projectorFrameRelayEnabled]);
+  }, [cameraStreams, isProjectorMode, projectorFrameRelayEnabled, projectorRelayProfile]);
 
   useEffect(() => () => {
     audioInputStreamsRef.current.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
@@ -547,6 +578,8 @@ export default function SolaWorshipApp() {
           if (data.bibleFontSize) setBibleFontSize(data.bibleFontSize);
           if (data.songFontSize) setSongFontSize(data.songFontSize);
           if (data.slideFontSize) setSlideFontSize(data.slideFontSize);
+          if (data.projectorRelayResolution) setProjectorRelayResolution(data.projectorRelayResolution);
+          if (data.projectorRelayFps) setProjectorRelayFps(data.projectorRelayFps);
           if (data.obsScenes) setObsScenes(normalizeObsScenes(data.obsScenes));
           if (data.themeItems) setThemeItems(mergeBuiltInThemes(ensureCommunionTheme(data.themeItems)));
           if (data.mediaItems) setMediaItems(mergeBuiltInMedia(data.mediaItems));
@@ -580,13 +613,13 @@ export default function SolaWorshipApp() {
     window.clearTimeout(persistenceTimerRef.current);
     persistenceTimerRef.current = window.setTimeout(async () => {
       try {
-        await window.storage.set('sola-worship:state-v8', JSON.stringify({ serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, slideFontSize, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs }));
+        await window.storage.set('sola-worship:state-v8', JSON.stringify({ serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, slideFontSize, projectorRelayResolution, projectorRelayFps, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs }));
       } catch {
         // ignore persistence errors
       }
     }, 500);
     return () => window.clearTimeout(persistenceTimerRef.current);
-  }, [serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, slideFontSize, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs, storageReady, storageStatus]);
+  }, [serviceOrder, audioChannels, outputs, selectedVersion, bibleFontSize, songFontSize, slideFontSize, projectorRelayResolution, projectorRelayFps, obsScenes, themeItems, mediaItems, slidePresentations, savedSongs, storageReady, storageStatus]);
 
   useEffect(() => {
     const applyProjectorState = (state) => {
@@ -645,10 +678,15 @@ export default function SolaWorshipApp() {
         transport.postMessage({ type: 'program-state', state: projectorStateRef.current });
         transport.postMessage({ type: 'camera-streams-changed' });
       }
-      if (isProjectorMode && message.type === 'camera-frame' && message.sourceId && message.frame) {
+      if (isProjectorMode && message.type === 'camera-frame' && message.sourceId && (message.frame || message.frameBuffer)) {
         if (!window.__solaCameraFrameStore) window.__solaCameraFrameStore = {};
-        window.__solaCameraFrameStore[message.sourceId] = message.frame;
-        window.dispatchEvent(new CustomEvent('sola-camera-frame', { detail: { sourceId: message.sourceId, frame: message.frame } }));
+        const previousFrame = window.__solaCameraFrameStore[message.sourceId];
+        const frame = message.frameBuffer
+          ? URL.createObjectURL(new Blob([message.frameBuffer], { type: message.mimeType || 'image/jpeg' }))
+          : message.frame;
+        window.__solaCameraFrameStore[message.sourceId] = frame;
+        if (typeof previousFrame === 'string' && previousFrame.startsWith('blob:')) URL.revokeObjectURL(previousFrame);
+        window.dispatchEvent(new CustomEvent('sola-camera-frame', { detail: { sourceId: message.sourceId, frame } }));
         setCameraStreams((current) => current[message.sourceId]?.getVideoTracks || current[message.sourceId]?.relaySourceId
           ? current
           : { ...current, [message.sourceId]: { relaySourceId: message.sourceId } });
@@ -1888,6 +1926,36 @@ export default function SolaWorshipApp() {
     setThemeItems((current) => [...current, { id: 'theme' + nextThemeId++, name: creatorName.trim(), css, animated: creatorAnim !== 'none', anim: creatorAnim }]);
     setCreatorOpen(false); setCreatorName(''); setCreatorColor3('');
   };
+  const addImportedLibraryItems = (destination, files) => {
+    const items = files.map((file) => ({
+      id: `${destination}-${currentTimestamp()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      kind: file.kind,
+      dataUrl: file.dataUrl,
+      storagePath: file.storagePath,
+      imported: true,
+      ...(file.kind === 'video' ? { loop: true } : {}),
+    }));
+    if (!items.length) return;
+    if (destination === 'theme') {
+      setThemeItems((current) => [...items, ...current]);
+      setActiveBackground(items[0]);
+    } else {
+      setMediaItems((current) => [...items, ...current]);
+      setStagedContent({ kind: 'media-bg', item: items[0] });
+    }
+  };
+  const importLibraryMedia = async (destination) => {
+    if (window.solaDesktop?.importMedia) {
+      try {
+        addImportedLibraryItems(destination, await window.solaDesktop.importMedia(destination));
+      } catch (error) {
+        showAlert('Import failed', error.message || 'The selected files could not be imported.');
+      }
+      return;
+    }
+    (destination === 'theme' ? themeUploadRef : mediaLibraryUploadRef).current?.click();
+  };
   const readLibraryFile = (event, destination) => {
     const file = event.target.files[0]; if (!file) return;
     if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
@@ -1902,23 +1970,20 @@ export default function SolaWorshipApp() {
         showAlert('Import failed', `${file.name} could not be read.`);
         return;
       }
-      const item = { id: `${destination}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name, kind, dataUrl: reader.result, imported: true, ...(kind === 'video' ? { loop: true } : {}) };
-      if (destination === 'theme') {
-        setThemeItems((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
-        setActiveBackground(item);
-      } else {
-        setMediaItems((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
-        setStagedContent({ kind: 'media-bg', item });
-      }
+      addImportedLibraryItems(destination, [{ name: file.name, kind, dataUrl: reader.result }]);
     };
     reader.onerror = () => showAlert('Import failed', `${file.name} could not be loaded from this computer.`);
     reader.readAsDataURL(file); event.target.value = '';
   };
   const removeTheme = (id) => {
+    const removed = themeItems.find((item) => item.id === id);
+    if (removed?.storagePath) window.solaDesktop?.removeMediaFile?.(removed.storagePath).catch(() => {});
     setThemeItems((current) => current.filter((item) => item.id !== id));
     if (activeBackground.id === id) setActiveBackground(BUILTIN_THEMES[0]);
   };
   const removeMedia = (id) => {
+    const removed = mediaItems.find((item) => item.id === id);
+    if (removed?.storagePath) window.solaDesktop?.removeMediaFile?.(removed.storagePath).catch(() => {});
     setMediaItems((current) => current.filter((item) => item.id !== id));
     if (stagedContent?.kind === 'media-bg' && stagedContent.item.id === id) setStagedContent(null);
     if (programContent?.kind === 'media-bg' && programContent.item.id === id) setProgramContent(null);
@@ -2482,12 +2547,13 @@ export default function SolaWorshipApp() {
               <Power size={12} color="rgba(255,255,255,0.4)" />
             </div>
             <div style={{ flex: 1, padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <button onClick={() => showAlert('Streaming bridge required', 'Browsers cannot publish RTMP directly. Connect a desktop streaming bridge before this control can start a real stream.')} style={{ padding: '9px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '5px', color: 'rgba(255,255,255,0.55)', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}>Streaming unavailable</button>
+              <button onClick={() => setStreamingManagerOpen(true)} style={{ padding: '9px', background: 'rgba(37,99,235,0.18)', border: '1px solid #3b82f6', borderRadius: '5px', color: '#bfdbfe', fontSize: '11px', fontWeight: '700', cursor: 'pointer' }}>Live Streaming</button>
               <button onClick={() => setRecordingManagerOpen(true)} style={{ padding: '8px', background: recording ? 'rgba(220,38,38,0.2)' : recordingStatus === 'complete' ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.05)', border: '1px solid ' + (recording ? '#dc2626' : recordingStatus === 'complete' ? '#4ade80' : 'rgba(255,255,255,0.15)'), borderRadius: '5px', color: recording ? '#f87171' : recordingStatus === 'complete' ? '#4ade80' : 'white', fontSize: '11px', cursor: 'pointer' }}>{recordingStatus === 'recording' ? 'Recording Program' : recordingStatus === 'paused' ? 'Recording Paused' : recordingStatus === 'finalizing' ? 'Finalizing Video' : 'Recording Manager'}</button>
-              <button onClick={() => showAlert('Virtual camera unavailable', 'A browser cannot register an operating-system virtual camera device. Use a desktop bridge for this output.')} style={{ padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '5px', color: 'rgba(255,255,255,0.55)', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', justifyContent: 'center' }}><CameraIcon size={12} /> Virtual Camera unavailable</button>
+              <button onClick={() => setStreamingManagerOpen(true)} style={{ padding: '8px', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.5)', borderRadius: '5px', color: '#86efac', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', justifyContent: 'center' }}><CameraIcon size={12} /> Virtual Camera</button>
               <button onClick={() => setStudioMode((current) => !current)} style={{ padding: '8px', background: studioMode ? 'rgba(212,165,116,0.15)' : 'rgba(255,255,255,0.05)', border: '1px solid ' + (studioMode ? '#d4a574' : 'rgba(255,255,255,0.15)'), borderRadius: '5px', color: studioMode ? '#d4a574' : 'white', fontSize: '11px', cursor: 'pointer' }}>Studio Mode {studioMode ? 'ON' : 'OFF'}</button>
             <button onClick={takeSceneLive} style={{ padding: '8px', background: '#2563eb', border: '1px solid #2563eb', borderRadius: '5px', color: 'white', fontSize: '10px', fontWeight: '700', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}><Monitor size={12} /> PROJECT PROGRAM</button>
               <button onClick={() => setLiveOutputsOpen((current) => !current)} style={{ padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '5px', color: 'white', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', justifyContent: 'center' }}><SettingsIcon size={12} /> Settings</button>
+              <button onClick={() => setSystemCheckOpen(true)} style={{ padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '5px', color: 'white', fontSize: '11px', cursor: 'pointer' }}>System Check</button>
               <button onClick={() => setViewMode('planner')} style={{ padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '5px', color: 'white', fontSize: '11px', cursor: 'pointer', marginTop: 'auto' }}>Exit</button>
             </div>
           </div>
@@ -2496,6 +2562,14 @@ export default function SolaWorshipApp() {
           <div onClick={(event) => event.stopPropagation()} style={{ position: 'fixed', bottom: '60px', right: '20px', background: '#1e1e1e', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '8px', padding: '10px', width: '220px', zIndex: 60 }}>
             <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.5)', marginBottom: '8px', fontWeight: '700' }}>OUTPUT DESTINATIONS</div>
             {outputDestinationRows}
+            <div style={{ marginTop: '9px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,.1)' }}>
+              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,.5)', marginBottom: '5px', fontWeight: 700 }}>PROJECTOR CAMERA QUALITY</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 72px', gap: '5px' }}>
+                <select value={projectorRelayResolution} onChange={(event) => setProjectorRelayResolution(event.target.value)} style={{ padding: '6px', background: '#111', border: '1px solid rgba(255,255,255,.18)', borderRadius: '4px', color: 'white', fontSize: '9px' }}><option value="auto">Auto (recommended)</option><option value="480p">480p</option><option value="720p">720p HD</option><option value="1080p">1080p Full HD</option></select>
+                <select value={projectorRelayFps} onChange={(event) => setProjectorRelayFps(Number(event.target.value))} style={{ padding: '6px', background: '#111', border: '1px solid rgba(255,255,255,.18)', borderRadius: '4px', color: 'white', fontSize: '9px' }}><option value="10">10 FPS</option><option value="15">15 FPS</option><option value="25">25 FPS</option><option value="30">30 FPS</option></select>
+              </div>
+              <div style={{ marginTop: '4px', color: 'rgba(255,255,255,.38)', fontSize: '8px' }}>Fallback target: {projectorRelayProfile.width}×{projectorRelayProfile.height} at {projectorRelayProfile.fps} FPS. Direct streams keep their selected native quality.</div>
+            </div>
             <button onClick={copyTabletDisplayLink} style={{ width: '100%', marginTop: '8px', padding: '8px', background: 'rgba(37,99,235,0.16)', border: '1px solid #3b82f6', borderRadius: '4px', color: '#bfdbfe', cursor: 'pointer', fontSize: '10px' }}>Copy Tablet Screen Link</button>
           </div>
         )}
@@ -2505,7 +2579,7 @@ export default function SolaWorshipApp() {
             <span>{recording ? `Program recording ${recordingStatus}` : recordingStatus === 'complete' ? 'Recording file complete' : audioEngineReady ? 'Audio engine active' : 'Audio engine off'}</span>
           </div>
           <div style={{ display: 'flex', gap: '16px' }}>
-            <span>{Object.keys(cameraStreams).length} camera stream(s)</span><span>{Object.keys(screenStreams).length} screen capture(s)</span><span>RTMP bridge: not connected</span>
+            <span>{Object.keys(cameraStreams).length} camera stream(s)</span><span>{Object.keys(screenStreams).length} screen capture(s)</span><span>{window.solaDesktop?.obs ? 'OBS bridge available' : 'Streaming requires desktop app'}</span>
           </div>
         </div>
       </div>
@@ -2517,6 +2591,10 @@ export default function SolaWorshipApp() {
       {globalStyles}
       {modal && <Modal modal={modal} onClose={() => setModal(null)} />}
       {cameraDialogs}
+      <Suspense fallback={null}>
+        {streamingManagerOpen && <StreamingManager onClose={() => setStreamingManagerOpen(false)} />}
+        {systemCheckOpen && <SystemCheck onClose={() => setSystemCheckOpen(false)} />}
+      </Suspense>
       {editingSlide && (
         <SlideEditor
           presName={slidePresentations.find((presentation) => presentation.id === editingSlide.presentationId)?.name || ''}
@@ -2713,7 +2791,7 @@ export default function SolaWorshipApp() {
                   </div>
                 ))}
               </div>
-              <button onClick={() => themeUploadRef.current?.click()} style={{ width: '100%', padding: '8px', marginBottom: '6px', background: 'rgba(74,222,128,0.08)', border: '1px dashed #4ade80', borderRadius: '5px', color: '#4ade80', fontSize: '11px', cursor: 'pointer' }}>Import image or video theme</button>
+              <button onClick={() => importLibraryMedia('theme')} style={{ width: '100%', padding: '8px', marginBottom: '6px', background: 'rgba(74,222,128,0.08)', border: '1px dashed #4ade80', borderRadius: '5px', color: '#4ade80', fontSize: '11px', cursor: 'pointer' }}>Import image or video theme</button>
               {!creatorOpen ? (
                 <button onClick={() => setCreatorOpen(true)} style={{ width: '100%', padding: '8px', background: 'rgba(212,165,116,0.1)', border: '1px dashed #d4a574', borderRadius: '5px', color: '#d4a574', fontSize: '11px', cursor: 'pointer' }}>+ Create Motion Background</button>
               ) : (
@@ -2759,7 +2837,7 @@ export default function SolaWorshipApp() {
                   </div>
                 ))}
               </div>
-              <button onClick={() => mediaLibraryUploadRef.current?.click()} style={{ display: 'block', width: '100%', padding: '8px', background: 'rgba(212,165,116,0.1)', border: '1px dashed #d4a574', borderRadius: '5px', color: '#d4a574', fontSize: '11px', cursor: 'pointer', textAlign: 'center', boxSizing: 'border-box' }}>Import image or video</button>
+              <button onClick={() => importLibraryMedia('media')} style={{ display: 'block', width: '100%', padding: '8px', background: 'rgba(212,165,116,0.1)', border: '1px dashed #d4a574', borderRadius: '5px', color: '#d4a574', fontSize: '11px', cursor: 'pointer', textAlign: 'center', boxSizing: 'border-box' }}>Import image or video</button>
             </div>
           )}
           {mediaTab === 'slides' && (
